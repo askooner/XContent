@@ -302,8 +302,8 @@ def _format_time(seconds: float) -> str:
 @click.option("--video", "-v", "video_id", default=None, help="YouTube video ID to use as source")
 @click.option("--topic", "-t", default="", help="What the post should be about")
 @click.option("--focus", "-f", default="", help="Specific angle or moment to focus on")
-@click.option("--type", "-T", "content_type", default="linkedin",
-              type=click.Choice(["linkedin", "twitter", "thread", "newsletter"]),
+@click.option("--type", "-T", "content_type", default="insights",
+              type=click.Choice(["insights", "essays", "transcripts", "quote-tweets"]),
               help="Content format")
 @click.option("--instructions", "-i", default="", help="Additional instructions")
 @click.option("--transcript-file", default=None, help="Path to a transcript file (instead of --video)")

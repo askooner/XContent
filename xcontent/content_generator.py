@@ -136,25 +136,47 @@ def generate_and_save(
 def _build_system_prompt(style_prompt: str, content_type: str) -> str:
     """Build the full system prompt combining style + content type instructions."""
     content_type_instructions = {
-        "linkedin": (
-            "You are writing a LinkedIn post. It should be a single post (not a thread). "
-            "LinkedIn posts perform best when they have a strong hook in the first 1-2 lines "
-            "(the part visible before 'see more'), use line breaks for readability, and end "
-            "with a thought-provoking question or strong closing statement. Keep it under 3000 characters."
+        "insights": (
+            "You are writing an INSIGHTS post. Format:\n"
+            "- Open with '[Person], [title/role], on [specific topic]:'\n"
+            "- Alternate between direct quotes from the source and your short commentary/analysis\n"
+            "- Use lots of line breaks — every sentence or two gets its own paragraph\n"
+            "- Weave a narrative thread: set up the context, build the insight, deliver the payoff\n"
+            "- End with a punchy 1-2 line takeaway (often after 'The result?' or similar)\n"
+            "- Use quotation marks for direct quotes from the person\n"
+            "- Keep commentary sharp and brief — let the quotes do the heavy lifting\n"
+            "- This is a Twitter/X post, keep it concise but complete"
         ),
-        "twitter": (
-            "You are writing a single tweet. Max 280 characters. Make it punchy and standalone. "
-            "It should be a complete thought that works on its own."
+        "essays": (
+            "You are writing an ESSAY post. Format:\n"
+            "- Open with a title or quote attribution in quotes (e.g. '\"Don't be a Career\" by Steve Jobs')\n"
+            "- Present the person's words and ideas in flowing, thoughtful paragraphs\n"
+            "- This is more curated excerpt than commentary — let the source material breathe\n"
+            "- Minimal editorial voice — you're presenting their wisdom, not analyzing it\n"
+            "- Use paragraph breaks between distinct ideas\n"
+            "- The tone is reverent and thoughtful, like sharing something profound you found\n"
+            "- This is a Twitter/X post, but longer-form — use the full character space"
         ),
-        "thread": (
-            "You are writing a Twitter/X thread. Start with a hook tweet that makes people "
-            "want to read the rest. Number each tweet (1/, 2/, etc.). Each tweet should be "
-            "under 280 characters. End with a summary or call-to-action tweet. Aim for 5-12 tweets."
+        "transcripts": (
+            "You are writing a TRANSCRIPT-STYLE post. Format:\n"
+            "- Hook line at the top (e.g. 'Lessons Steve Jobs wanted to pass on.')\n"
+            "- Short dramatic context line (e.g. 'Written right before he died.')\n"
+            "- Then 'In his/her own words:'\n"
+            "- Numbered sections (1. 2. 3. etc.) with ALL CAPS topic headers\n"
+            "- Under each header, the person's direct quote on that topic\n"
+            "- Like a curated listicle of the best moments from a talk or interview\n"
+            "- Pick the 5-8 most powerful/interesting points from the source material\n"
+            "- This is a Twitter/X post — structured and scannable"
         ),
-        "newsletter": (
-            "You are writing a newsletter section or short essay. It should be 500-1500 words, "
-            "well-structured with clear sections, and feel like a thoughtful piece of writing — "
-            "not a summary. Open with a hook, develop the ideas, and close with a takeaway."
+        "quote-tweets": (
+            "You are writing a QUOTE TWEET. Format:\n"
+            "- Find the single most powerful quote from the source material\n"
+            "- Put it in quotation marks\n"
+            "- Line break, then '~ [Person's Full Name]'\n"
+            "- That's it. No commentary, no analysis, no fluff\n"
+            "- The quote should be punchy, memorable, and stand completely on its own\n"
+            "- Max 2-3 sentences for the quote — shorter is better\n"
+            "- This is designed to be posted as a quote tweet over someone else's post"
         ),
     }
 

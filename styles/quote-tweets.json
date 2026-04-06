@@ -1,0 +1,9 @@
+{
+  "name": "quote-tweets",
+  "description": "Short and punchy. Just a powerful quote in quotation marks, a line break, then '~ [Person's Name]'. Used as a quote tweet on someone else's post. Minimal — the quote does all the work. No commentary, no fluff.",
+  "examples": [
+    "\"Failure is not an option. There's no option. It's success or death.\"\n\n~ Michael Ovitz"
+  ],
+  "created_at": "2026-04-06T00:00:00",
+  "updated_at": "2026-04-06T00:00:00"
+}

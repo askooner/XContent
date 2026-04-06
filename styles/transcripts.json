@@ -1,0 +1,9 @@
+{
+  "name": "transcripts",
+  "description": "Structured extraction from source material. Hook line at the top, then 'In his/her own words:' followed by numbered sections with ALL CAPS topic headers and direct quotes underneath. Like a curated listicle of the best moments from a talk or interview.",
+  "examples": [
+    "Lessons Steve Jobs wanted to pass on.\n\nWritten right before he died.\n\nIn his own words:\n\n1. ON BUILDING A REAL COMPANY:\n\nI hate it when people call themselves \u201centrepreneurs\u201d when what they're really trying to do is launch a startup and then sell or go public, so they can cash..."
+  ],
+  "created_at": "2026-04-06T00:00:00",
+  "updated_at": "2026-04-06T00:00:00"
+}

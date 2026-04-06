@@ -1,0 +1,9 @@
+{
+  "name": "insights",
+  "description": "Narrative breakdown of a specific insight from a founder/entrepreneur. Opens with '[Person], [title], on [topic]:' then alternates between direct quotes and your commentary. Short paragraphs, lots of line breaks. Ends with a punchy takeaway line.",
+  "examples": [
+    "Coinbase co-founder, Brian Armstrong, on why the best co-founder disagreements are resolved using a number, not a title:\n\n\"It would be a bad move for me to say every time, well I'm the CEO, so I'm making the final call. That's a good recipe to just piss off other people who are working with you.\"\n\nBrian and his co-founder agree on 90-95% of decisions. For the 5%, they needed something better than hierarchy.\n\nSo they created a simple game: \"1 to 5, how much do you care?\" played like rock, paper, scissors.\n\n\"On three, 1 2 3, we're going to hit, you know, I'm a three, you're a four. All right, let's go your way on this.\"\n\nThe genius is that it exposes what passion alone can't.\n\nYou can never tell from an argument how much someone actually cares:\n\n\"Sometimes somebody will be like really passionately arguing for something... and then you're like, they're a two out of five. They just love to engage in debate.\"\n\nSo Brian added an built-in accountability layer:\n\nWhoever won the decision also owned the outcome:\n\n\"You care more. Let's go your way, but if it breaks, it's on you to fix it.\"\n\nWhen asked what happens if both people are a five out of five, Brian says it essentially never happened once. But if it did, they'd simply flip a coin.\n\nThe result?\n\nFaster decisions, no resentment, and conviction paired with responsibility."
+  ],
+  "created_at": "2026-04-06T00:00:00",
+  "updated_at": "2026-04-06T00:00:00"
+}
