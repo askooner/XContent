@@ -299,8 +299,8 @@ def _format_time(seconds: float) -> str:
 
 @cli.command()
 @click.option("--style", "-s", "style_name", required=True, help="Style profile to use")
-@click.option("--video", "-v", "video_id", default=None, help="YouTube video ID to use as source")
-@click.option("--topic", "-t", default="", help="What the post should be about")
+@click.option("--video", "-v", "video_id", default=None, help="YouTube video ID or URL")
+@click.option("--topic", "-t", default="", help="What the post should be about (also used to auto-search videos)")
 @click.option("--focus", "-f", default="", help="Specific angle or moment to focus on")
 @click.option("--type", "-T", "content_type", default="insights",
               type=click.Choice(["insights", "essays", "transcripts", "quote-tweets"]),
@@ -310,9 +310,21 @@ def _format_time(seconds: float) -> str:
 @click.option("--model", "-m", default=None, help="Claude model to use")
 @click.option("--no-save", is_flag=True, help="Don't save the output to a file")
 def write(style_name, video_id, topic, focus, content_type, instructions, transcript_file, model, no_save):
-    """Generate content in your style from a source transcript."""
+    """Generate content in your style from a source transcript.
+
+    If no --video is given but --topic is, it will search your channels
+    and let you pick a video. You can also pass a full YouTube URL as --video.
+    """
+    import re
+
     from .content_generator import generate, generate_and_save
-    from .source_manager import get_transcript, get_video_details
+    from .source_manager import get_transcript, get_video_details, search_videos
+
+    # Extract video ID from full YouTube URL if given
+    if video_id and ("youtube.com" in video_id or "youtu.be" in video_id):
+        m = re.search(r"(?:v=|youtu\.be/)([\w-]{11})", video_id)
+        if m:
+            video_id = m.group(1)
 
     # Get transcript
     if transcript_file:
@@ -333,6 +345,46 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
                 console.print()
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
+            return
+    elif topic:
+        # Auto-search: find a video matching the topic
+        try:
+            with console.status(f"Searching for '{topic}' across your channels..."):
+                results = search_videos(topic, max_results=5)
+        except Exception as e:
+            console.print(f"[red]Error searching: {e}[/red]")
+            return
+
+        if not results:
+            console.print(f"[yellow]No videos found for '{topic}'.[/yellow]")
+            return
+
+        # Show results and let user pick
+        console.print(f"\n[bold]Found {len(results)} videos for '{topic}':[/bold]\n")
+        for i, v in enumerate(results, 1):
+            console.print(f"  [cyan]{i}[/cyan]. {v['title']} — [dim]{v['channel']} ({v['published']})[/dim]")
+
+        console.print()
+        choice = click.prompt("Pick a video (number)", type=int, default=1)
+        if choice < 1 or choice > len(results):
+            console.print("[red]Invalid choice.[/red]")
+            return
+
+        picked = results[choice - 1]
+        video_id = picked["video_id"]
+
+        try:
+            with console.status("Fetching transcript..."):
+                video_title = picked["title"]
+                transcript_text = get_transcript(video_id)
+            console.print(f"\n[green]Source:[/green] {video_title}")
+            console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]")
+            if len(transcript_text) > 15_000:
+                console.print(f"[dim]Will extract key material first to save costs[/dim]\n")
+            else:
+                console.print()
+        except Exception as e:
+            console.print(f"[red]Error fetching transcript: {e}[/red]")
             return
     else:
         console.print("[yellow]Paste your transcript below. Press Ctrl+D (or Ctrl+Z on Windows) when done:[/yellow]")
