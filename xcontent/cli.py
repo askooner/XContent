@@ -20,6 +20,7 @@ Usage:
     xcontent history                   List previously generated content
 """
 
+import os
 import sys
 from datetime import datetime
 
