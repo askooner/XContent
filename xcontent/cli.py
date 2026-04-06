@@ -21,6 +21,7 @@ Usage:
 """
 
 import sys
+from datetime import datetime
 
 import click
 from rich.console import Console
@@ -437,6 +438,192 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
 
     if path:
         console.print(f"[dim]Saved to: {path}[/dim]")
+
+
+# ── Batch Command ────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.option("--style", "-s", "style_name", required=True, help="Style profile to use")
+@click.option("--video", "-v", "video_id", default=None, help="YouTube video ID or URL")
+@click.option("--topic", "-t", default="", help="Search topic to find a video")
+@click.option("--type", "-T", "content_type", default="insights",
+              type=click.Choice(["insights", "essays", "transcripts", "quote-tweets"]),
+              help="Content format for all posts")
+@click.option("--num", "-n", "num_posts", default=5, help="Number of posts to generate (default: 5)")
+@click.option("--transcript-file", default=None, help="Path to a transcript file")
+@click.option("--model", "-m", default=None, help="Claude model to use")
+@click.option("--instructions", "-i", default="", help="Additional instructions for all posts")
+def batch(style_name, video_id, topic, content_type, num_posts, transcript_file, model, instructions):
+    """Generate multiple posts from a single video.
+
+    Extracts 4-5+ distinct ideas from one transcript and writes a separate
+    post for each. One video = a week of content.
+    """
+    import re
+
+    from .content_generator import generate_batch
+    from .source_manager import get_transcript, get_video_details, search_videos
+
+    # Extract video ID from full YouTube URL if given
+    if video_id and ("youtube.com" in video_id or "youtu.be" in video_id):
+        m = re.search(r"(?:v=|youtu\.be/)([\w-]{11})", video_id)
+        if m:
+            video_id = m.group(1)
+
+    # Get transcript
+    if transcript_file:
+        with open(transcript_file) as f:
+            transcript_text = f.read()
+        video_title = transcript_file
+    elif video_id:
+        try:
+            with console.status("Fetching video info and transcript..."):
+                details = get_video_details(video_id)
+                video_title = details["title"]
+                transcript_text = get_transcript(video_id)
+            console.print(f"[green]Source:[/green] {video_title}")
+            console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]\n")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return
+    elif topic:
+        try:
+            with console.status(f"Searching for '{topic}'..."):
+                results = search_videos(topic, max_results=5)
+        except Exception as e:
+            console.print(f"[red]Error searching: {e}[/red]")
+            return
+
+        if not results:
+            console.print(f"[yellow]No videos found for '{topic}'.[/yellow]")
+            return
+
+        console.print(f"\n[bold]Found {len(results)} videos:[/bold]\n")
+        for i, v in enumerate(results, 1):
+            console.print(f"  [cyan]{i}[/cyan]. {v['title']} — [dim]{v['channel']} ({v['published']})[/dim]")
+
+        console.print()
+        choice = click.prompt("Pick a video", type=int, default=1)
+        if choice < 1 or choice > len(results):
+            console.print("[red]Invalid choice.[/red]")
+            return
+
+        picked = results[choice - 1]
+        video_id = picked["video_id"]
+
+        try:
+            with console.status("Fetching transcript..."):
+                video_title = picked["title"]
+                transcript_text = get_transcript(video_id)
+            console.print(f"\n[green]Source:[/green] {video_title}")
+            console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]\n")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return
+    else:
+        console.print("[red]Provide --video, --topic, or --transcript-file.[/red]")
+        return
+
+    if not transcript_text.strip():
+        console.print("[red]No transcript provided.[/red]")
+        return
+
+    # Generate batch
+    console.print(f"[bold]Extracting {num_posts} post ideas and generating content...[/bold]\n")
+
+    try:
+        with console.status(f"Step 1: Mining transcript for {num_posts} distinct ideas..."):
+            from .content_generator import extract_ideas
+            ideas = extract_ideas(transcript_text, video_title, num_ideas=num_posts)
+
+        console.print(f"[green]Found {len(ideas)} ideas:[/green]\n")
+        for i, idea in enumerate(ideas, 1):
+            console.print(f"  [cyan]{i}[/cyan]. {idea.get('title', 'Untitled')}")
+            if idea.get('angle'):
+                console.print(f"     [dim]{idea['angle'][:80]}[/dim]")
+        console.print()
+
+        results = []
+        for i, idea in enumerate(ideas, 1):
+            with console.status(f"Writing post {i}/{len(ideas)}: {idea.get('title', '')}..."):
+                from .content_generator import generate, _slugify
+                from .style_manager import build_style_prompt
+
+                style_prompt = build_style_prompt(style_name)
+
+                from .content_generator import _build_system_prompt, _build_user_prompt, _get_anthropic_client
+                client = _get_anthropic_client()
+                write_model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+                system_prompt = _build_system_prompt(style_prompt, content_type)
+                key_material = idea.get("key_material", idea.get("key_quotes", ""))
+                user_prompt = _build_user_prompt(
+                    transcript=key_material,
+                    topic=idea.get("title", ""),
+                    focus=idea.get("angle", ""),
+                    additional_instructions=instructions,
+                    video_title=video_title,
+                )
+
+                response = client.messages.create(
+                    model=write_model,
+                    max_tokens=4096,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
+                content = response.content[0].text
+
+                # Save
+                from pathlib import Path as P
+                content_dir = P(__file__).resolve().parent.parent / "content"
+                content_dir.mkdir(parents=True, exist_ok=True)
+
+                slug = _slugify(idea.get("title", f"post-{i}"))
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                base = f"{timestamp}_{slug}"
+
+                txt_path = content_dir / f"{base}.txt"
+                txt_path.write_text(content)
+
+                import json as _json
+                meta = {
+                    "style": style_name,
+                    "content_type": content_type,
+                    "topic": idea.get("title", ""),
+                    "focus": idea.get("angle", ""),
+                    "video_title": video_title,
+                    "video_id": video_id or "",
+                    "batch_index": i,
+                    "batch_total": len(ideas),
+                    "generated_at": datetime.now().isoformat(),
+                }
+                meta_path = content_dir / f"{base}.meta.json"
+                meta_path.write_text(_json.dumps(meta, indent=2))
+
+                results.append((content, txt_path))
+
+            console.print(f"  [green]Post {i}:[/green] {idea.get('title', '')}")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Show all generated posts
+    console.print(f"\n[bold green]Generated {len(results)} posts:[/bold green]\n")
+    for i, (content, path) in enumerate(results, 1):
+        console.print(f"[bold cyan]── Post {i} ──[/bold cyan]\n")
+        console.print(content)
+        console.print(f"\n[dim]Saved: {path}[/dim]\n")
+
+    # Copy all to clipboard (separated by dividers)
+    try:
+        import subprocess
+        all_content = "\n\n---\n\n".join(c for c, _ in results)
+        subprocess.run(["pbcopy"], input=all_content.encode(), check=True)
+        console.print(f"[green]All {len(results)} posts copied to clipboard (separated by ---).[/green]")
+    except Exception:
+        pass
 
 
 # ── History ──────────────────────────────────────────────────────────

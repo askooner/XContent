@@ -64,6 +64,147 @@ def _extract_key_material(client, transcript: str, topic: str, focus: str, video
     return response.content[0].text
 
 
+def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 5) -> list[dict]:
+    """Extract multiple distinct post ideas from a single transcript.
+
+    Returns a list of dicts with 'title', 'angle', and 'key_quotes' for each idea.
+    This is the first step of batch mode — one cheap Haiku call to mine the whole video.
+    """
+    client = _get_anthropic_client()
+
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=3000,
+        system=(
+            "You are a content strategist. Your job is to extract MULTIPLE distinct, "
+            "standalone post ideas from a single transcript. Each idea should be a "
+            "different topic, story, or insight — not variations of the same thing.\n\n"
+            "For each idea, provide:\n"
+            "1. A short title (what the post would be about)\n"
+            "2. The angle/hook (why this is interesting)\n"
+            "3. The key quotes and facts from the transcript that support this post\n\n"
+            "Output as JSON array. Example:\n"
+            "[\n"
+            '  {"title": "Bezos on why he reads customer complaint emails", '
+            '"angle": "The CEO of a trillion-dollar company still reads raw customer emails — here\'s why", '
+            '"key_material": "Direct quotes and specific facts from the transcript..."},\n'
+            "  ...\n"
+            "]\n\n"
+            "Rules:\n"
+            "- Each idea must be DIFFERENT enough to be its own standalone post\n"
+            "- Include the actual quotes and specifics, not just summaries\n"
+            "- Focus on stories, contrarian takes, surprising facts, and frameworks\n"
+            "- Skip generic/obvious insights — only the stuff that would stop someone scrolling"
+        ),
+        messages=[{"role": "user", "content": (
+            f"Source: {video_title}\n\n"
+            f"Extract {num_ideas} distinct post ideas from this transcript.\n\n"
+            f"--- TRANSCRIPT ---\n{transcript}\n--- END TRANSCRIPT ---"
+        )}],
+    )
+
+    # Parse the JSON response
+    text = response.content[0].text
+    # Handle cases where the model wraps in ```json
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0]
+
+    try:
+        ideas = json.loads(text)
+    except json.JSONDecodeError:
+        # If JSON parsing fails, try to salvage
+        import re
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            ideas = json.loads(match.group())
+        else:
+            raise ValueError("Could not parse ideas from the transcript. Try again.")
+
+    return ideas
+
+
+def generate_batch(
+    style_name: str,
+    transcript: str,
+    content_type: str = "insights",
+    model: str | None = None,
+    video_title: str = "",
+    video_id: str = "",
+    num_posts: int = 5,
+    additional_instructions: str = "",
+) -> list[tuple[str, Path]]:
+    """Generate multiple posts from a single transcript.
+
+    Step 1: Extract N distinct ideas (one cheap Haiku call)
+    Step 2: Generate a post for each idea (N cheap Haiku calls)
+
+    Returns list of (content, file_path) tuples.
+    """
+    from .style_manager import build_style_prompt
+
+    _ensure_content_dir()
+    client = _get_anthropic_client()
+    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+    # Step 1: Extract ideas
+    ideas = extract_ideas(transcript, video_title, num_ideas=num_posts)
+
+    # Step 2: Generate a post for each idea
+    style_prompt = build_style_prompt(style_name)
+    system_prompt = _build_system_prompt(style_prompt, content_type)
+    results = []
+
+    for i, idea in enumerate(ideas):
+        title = idea.get("title", f"idea-{i+1}")
+        key_material = idea.get("key_material", idea.get("key_quotes", ""))
+        angle = idea.get("angle", "")
+
+        user_prompt = _build_user_prompt(
+            transcript=key_material,
+            topic=title,
+            focus=angle,
+            additional_instructions=additional_instructions,
+            video_title=video_title,
+        )
+
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        content = response.content[0].text
+
+        # Save each post
+        slug = _slugify(title)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = f"{timestamp}_{slug}"
+
+        txt_path = CONTENT_DIR / f"{base}.txt"
+        txt_path.write_text(content)
+
+        meta = {
+            "style": style_name,
+            "content_type": content_type,
+            "topic": title,
+            "focus": angle,
+            "video_title": video_title,
+            "video_id": video_id,
+            "batch_index": i + 1,
+            "batch_total": len(ideas),
+            "generated_at": datetime.now().isoformat(),
+        }
+        meta_path = CONTENT_DIR / f"{base}.meta.json"
+        meta_path.write_text(json.dumps(meta, indent=2))
+
+        results.append((content, txt_path))
+
+    return results
+
+
 def generate(
     style_name: str,
     transcript: str,
