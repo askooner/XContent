@@ -5,6 +5,8 @@ You add YouTube channels (Founders Podcast, etc.) once. Then you can search
 across all of them, browse episodes, and pull transcripts — all from one place.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import ssl

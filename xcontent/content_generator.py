@@ -5,6 +5,8 @@ This is the assembly line: your style is the template, YouTube transcripts
 are the raw material, and Claude does the assembly.
 """
 
+from __future__ import annotations
+
 import json
 import os
 from datetime import datetime

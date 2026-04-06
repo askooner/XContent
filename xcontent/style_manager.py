@@ -6,6 +6,8 @@ You paste 3-5 example posts. The system extracts your style DNA
 so you never have to re-explain how you write.
 """
 
+from __future__ import annotations
+
 import json
 import os
 from datetime import datetime
