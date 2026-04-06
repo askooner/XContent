@@ -67,61 +67,87 @@ def _extract_key_material(client, transcript: str, topic: str, focus: str, video
 def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 5) -> list[dict]:
     """Extract multiple distinct post ideas from a single transcript.
 
-    Returns a list of dicts with 'title', 'angle', and 'key_quotes' for each idea.
+    Returns a list of dicts with 'title', 'angle', and 'key_material' for each idea.
     This is the first step of batch mode — one cheap Haiku call to mine the whole video.
     """
     client = _get_anthropic_client()
 
+    # For very long transcripts, truncate to save costs on the extraction call
+    extract_transcript = transcript
+    if len(extract_transcript) > 80_000:
+        extract_transcript = extract_transcript[:80_000]
+
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=3000,
+        max_tokens=4000,
         system=(
-            "You are a content strategist. Your job is to extract MULTIPLE distinct, "
-            "standalone post ideas from a single transcript. Each idea should be a "
-            "different topic, story, or insight — not variations of the same thing.\n\n"
-            "For each idea, provide:\n"
-            "1. A short title (what the post would be about)\n"
-            "2. The angle/hook (why this is interesting)\n"
-            "3. The key quotes and facts from the transcript that support this post\n\n"
-            "Output as JSON array. Example:\n"
-            "[\n"
-            '  {"title": "Bezos on why he reads customer complaint emails", '
-            '"angle": "The CEO of a trillion-dollar company still reads raw customer emails — here\'s why", '
-            '"key_material": "Direct quotes and specific facts from the transcript..."},\n'
-            "  ...\n"
-            "]\n\n"
+            "You extract post ideas from transcripts. Output ONLY a valid JSON array.\n\n"
+            "Each object must have exactly these 3 keys:\n"
+            '- "title": short post title\n'
+            '- "angle": the hook / why it\'s interesting (1 sentence)\n'
+            '- "key_material": the actual quotes and facts to build the post from (include direct quotes)\n\n'
             "Rules:\n"
-            "- Each idea must be DIFFERENT enough to be its own standalone post\n"
-            "- Include the actual quotes and specifics, not just summaries\n"
-            "- Focus on stories, contrarian takes, surprising facts, and frameworks\n"
-            "- Skip generic/obvious insights — only the stuff that would stop someone scrolling"
+            "- Each idea must be a DIFFERENT topic/story — not variations of the same thing\n"
+            "- Include actual quotes from the transcript in key_material\n"
+            "- Focus on stories, contrarian takes, surprising facts, frameworks\n"
+            "- Output ONLY the JSON array. No text before or after it. No markdown."
         ),
         messages=[{"role": "user", "content": (
             f"Source: {video_title}\n\n"
-            f"Extract {num_ideas} distinct post ideas from this transcript.\n\n"
-            f"--- TRANSCRIPT ---\n{transcript}\n--- END TRANSCRIPT ---"
+            f"Extract exactly {num_ideas} distinct post ideas.\n\n"
+            f"--- TRANSCRIPT ---\n{extract_transcript}\n--- END TRANSCRIPT ---"
         )}],
     )
 
-    # Parse the JSON response
-    text = response.content[0].text
-    # Handle cases where the model wraps in ```json
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0]
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0]
+    text = response.content[0].text.strip()
 
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        # Remove first line (```json or ```) and last line (```)
+        lines = text.split("\n")
+        text = "\n".join(lines[1:])
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+
+    # Try parsing directly
     try:
         ideas = json.loads(text)
+        if isinstance(ideas, list):
+            return ideas
     except json.JSONDecodeError:
-        # If JSON parsing fails, try to salvage
-        import re
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        if match:
-            ideas = json.loads(match.group())
-        else:
-            raise ValueError("Could not parse ideas from the transcript. Try again.")
+        pass
 
+    # Fallback: find the JSON array in the text
+    import re
+    match = re.search(r'\[[\s\S]*\]', text)
+    if match:
+        try:
+            ideas = json.loads(match.group())
+            if isinstance(ideas, list):
+                return ideas
+        except json.JSONDecodeError:
+            pass
+
+    # Last resort: ask again with stricter instructions
+    response2 = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=4000,
+        messages=[
+            {"role": "user", "content": (
+                f"Source: {video_title}\n\n"
+                f"Extract exactly {num_ideas} distinct post ideas from this transcript. "
+                f"Output ONLY a JSON array, nothing else.\n\n"
+                f"--- TRANSCRIPT ---\n{extract_transcript[:40000]}\n--- END TRANSCRIPT ---"
+            )},
+            {"role": "assistant", "content": "["},
+        ],
+    )
+
+    text2 = "[" + response2.content[0].text.strip()
+    if text2.rstrip().endswith("```"):
+        text2 = text2.rstrip()[:-3]
+
+    ideas = json.loads(text2)
     return ideas
 
 
