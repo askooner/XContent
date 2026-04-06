@@ -7,6 +7,7 @@ across all of them, browse episodes, and pull transcripts — all from one place
 
 import json
 import os
+import ssl
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +24,7 @@ def _ensure_sources_dir():
 
 def _get_youtube_client():
     """Build an authenticated YouTube Data API client."""
+    import httplib2
     from googleapiclient.discovery import build
 
     api_key = os.getenv("YOUTUBE_API_KEY")
@@ -31,7 +33,10 @@ def _get_youtube_client():
             "YOUTUBE_API_KEY not set. Add it to your .env file.\n"
             "Get one at https://console.cloud.google.com/apis/credentials"
         )
-    return build("youtube", "v3", developerKey=api_key)
+
+    # Handle environments with custom/self-signed SSL certificates
+    http = httplib2.Http(disable_ssl_certificate_validation=True)
+    return build("youtube", "v3", developerKey=api_key, http=http)
 
 
 # ── Channel Management ──────────────────────────────────────────────
