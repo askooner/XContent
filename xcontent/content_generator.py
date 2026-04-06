@@ -180,7 +180,7 @@ def _build_system_prompt(style_prompt: str, content_type: str) -> str:
         ),
     }
 
-    instructions = content_type_instructions.get(content_type, content_type_instructions["linkedin"])
+    instructions = content_type_instructions.get(content_type, content_type_instructions["insights"])
 
     return f"""{style_prompt}
 
