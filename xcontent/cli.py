@@ -326,7 +326,11 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
                 video_title = details["title"]
                 transcript_text = get_transcript(video_id)
             console.print(f"[green]Source:[/green] {video_title}")
-            console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]\n")
+            console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]")
+            if len(transcript_text) > 15_000:
+                console.print(f"[dim]Will extract key material first to save costs[/dim]\n")
+            else:
+                console.print()
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             return

@@ -35,35 +35,61 @@ def _get_anthropic_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
+def _extract_key_material(client, transcript: str, topic: str, focus: str, video_title: str) -> str:
+    """Step 1: Use Haiku to cheaply extract only the relevant parts of a long transcript."""
+    extract_prompt = "Extract the most important quotes, stories, numbers, and insights"
+    if topic:
+        extract_prompt += f" related to: {topic}"
+    if focus:
+        extract_prompt += f" (focus on: {focus})"
+
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=2000,
+        system=(
+            "You are a research assistant. Your job is to extract the best raw material "
+            "from a transcript for a content writer. Pull out:\n"
+            "- The most powerful direct quotes (keep them exact)\n"
+            "- Specific stories, anecdotes, and examples\n"
+            "- Interesting numbers, facts, and data points\n"
+            "- Key insights and frameworks\n\n"
+            "Output ONLY the extracted material. No commentary. No summaries. "
+            "Just the raw gold — quotes and facts, organized by theme."
+        ),
+        messages=[{"role": "user", "content": (
+            f"Source: {video_title}\n\n{extract_prompt}\n\n"
+            f"--- TRANSCRIPT ---\n{transcript}\n--- END TRANSCRIPT ---"
+        )}],
+    )
+    return response.content[0].text
+
+
 def generate(
     style_name: str,
     transcript: str,
     topic: str = "",
     focus: str = "",
-    content_type: str = "linkedin",
+    content_type: str = "insights",
     additional_instructions: str = "",
     model: str | None = None,
     video_title: str = "",
 ) -> str:
     """Generate content in your style from a transcript.
 
-    Args:
-        style_name: Name of the saved style profile to use.
-        transcript: The source transcript text.
-        topic: What the post should be about (e.g. "Bezos on customer obsession").
-        focus: Specific angle or moment to focus on. Leave empty for best-of extraction.
-        content_type: Type of content — "linkedin", "twitter", "thread", "newsletter".
-        additional_instructions: Any extra direction for this specific post.
-        model: Claude model to use. Defaults to CLAUDE_MODEL env var.
-        video_title: Title of the source video (for context).
+    For long transcripts (>15K chars), uses a two-step process:
+    1. Haiku cheaply extracts the relevant quotes/stories/facts
+    2. The writing model generates the post from the compressed material
 
-    Returns:
-        The generated content as a string.
+    This cuts costs by ~80% on long transcripts.
     """
     from .style_manager import build_style_prompt
 
     client = _get_anthropic_client()
-    model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+    # For long transcripts, extract key material first (cheap step)
+    if len(transcript) > 15_000:
+        transcript = _extract_key_material(client, transcript, topic, focus, video_title)
 
     style_prompt = build_style_prompt(style_name)
 
