@@ -136,27 +136,29 @@ def generate_and_save(
         video_title=video_title,
     )
 
-    # Save with metadata
+    # Save as plain text (easy to copy/share) + metadata sidecar
     slug = _slugify(topic or video_title or "untitled")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{slug}.json"
+    base = f"{timestamp}_{slug}"
 
-    output = {
-        "content": content,
-        "metadata": {
-            "style": style_name,
-            "content_type": content_type,
-            "topic": topic,
-            "focus": focus,
-            "video_title": video_title,
-            "video_id": video_id,
-            "generated_at": datetime.now().isoformat(),
-        },
+    # Plain text file — just the post, nothing else
+    txt_path = CONTENT_DIR / f"{base}.txt"
+    txt_path.write_text(content)
+
+    # Metadata sidecar
+    meta = {
+        "style": style_name,
+        "content_type": content_type,
+        "topic": topic,
+        "focus": focus,
+        "video_title": video_title,
+        "video_id": video_id,
+        "generated_at": datetime.now().isoformat(),
     }
+    meta_path = CONTENT_DIR / f"{base}.meta.json"
+    meta_path.write_text(json.dumps(meta, indent=2))
 
-    path = CONTENT_DIR / filename
-    path.write_text(json.dumps(output, indent=2))
-    return content, path
+    return content, txt_path
 
 
 def _build_system_prompt(style_prompt: str, content_type: str) -> str:

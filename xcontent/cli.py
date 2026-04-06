@@ -422,10 +422,21 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
                 video_id=video_id or "",
             )
 
-    console.print(Panel(content, title=f"{content_type.upper()} Post", border_style="green"))
+    # Output the content cleanly
+    console.print(f"\n[bold green]── {content_type.upper()} Post ──[/bold green]\n")
+    console.print(content)
+    console.print()
+
+    # Copy to clipboard (macOS)
+    try:
+        import subprocess
+        subprocess.run(["pbcopy"], input=content.encode(), check=True)
+        console.print("[green]Copied to clipboard.[/green] Just Cmd+V to paste.")
+    except Exception:
+        pass
 
     if path:
-        console.print(f"\n[dim]Saved to: {path}[/dim]")
+        console.print(f"[dim]Saved to: {path}[/dim]")
 
 
 # ── History ──────────────────────────────────────────────────────────
@@ -442,7 +453,10 @@ def history(limit):
         console.print("[yellow]No content generated yet.[/yellow]")
         return
 
-    files = sorted(content_dir.glob("*.json"), reverse=True)[:limit]
+    files = sorted(content_dir.glob("*.meta.json"), reverse=True)[:limit]
+    if not files:
+        # Fallback: check for old-style .json files
+        files = sorted(content_dir.glob("*.json"), reverse=True)[:limit]
     if not files:
         console.print("[yellow]No content generated yet.[/yellow]")
         return
@@ -458,13 +472,14 @@ def history(limit):
 
     for f in files:
         data = json.loads(f.read_text())
-        meta = data.get("metadata", {})
+        meta = data if f.name.endswith(".meta.json") else data.get("metadata", {})
+        txt_name = f.name.replace(".meta.json", ".txt")
         table.add_row(
             meta.get("generated_at", "")[:16],
             meta.get("style", "?"),
             meta.get("content_type", "?"),
             meta.get("topic", meta.get("video_title", ""))[:40],
-            f.name,
+            txt_name,
         )
 
     console.print(table)
