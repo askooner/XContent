@@ -79,15 +79,19 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
     if len(extract_transcript) > 80_000:
         extract_transcript = extract_transcript[:80_000]
 
-    if num_ideas > 0:
-        count_instruction = f"Extract exactly {num_ideas} distinct post ideas."
-    else:
-        count_instruction = (
-            "Extract as many distinct post ideas as you can find. "
-            "A 10-minute video might have 2-3. A 60-minute podcast might have 8-12. "
-            "Only include ideas that are genuinely interesting and different from each other. "
-            "Quality over quantity — skip anything generic."
-        )
+    # Smart default based on transcript length
+    if num_ideas <= 0:
+        char_count = len(extract_transcript)
+        if char_count < 15_000:
+            num_ideas = 3
+        elif char_count < 40_000:
+            num_ideas = 5
+        elif char_count < 70_000:
+            num_ideas = 7
+        else:
+            num_ideas = 10
+
+    count_instruction = f"Extract exactly {num_ideas} distinct post ideas."
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -127,7 +131,7 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
     # Try parsing directly
     try:
         ideas = json.loads(text)
-        if isinstance(ideas, list):
+        if isinstance(ideas, list) and len(ideas) > 0:
             return ideas
     except json.JSONDecodeError:
         pass
@@ -138,32 +142,42 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
     if match:
         try:
             ideas = json.loads(match.group())
-            if isinstance(ideas, list):
+            if isinstance(ideas, list) and len(ideas) > 0:
                 return ideas
         except json.JSONDecodeError:
             pass
 
-    # Last resort: ask again with stricter instructions
+    # Last resort: prefill assistant response to force JSON
     response2 = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=4000,
+        max_tokens=6000,
         messages=[
             {"role": "user", "content": (
                 f"Source: {video_title}\n\n"
                 f"Extract exactly {num_ideas} distinct post ideas from this transcript. "
-                f"Output ONLY a JSON array, nothing else.\n\n"
+                f"Each must have: title, angle, key_material (with direct quotes). "
+                f"Output ONLY a JSON array.\n\n"
                 f"--- TRANSCRIPT ---\n{extract_transcript[:40000]}\n--- END TRANSCRIPT ---"
             )},
-            {"role": "assistant", "content": "["},
+            {"role": "assistant", "content": "[{"},
         ],
     )
 
-    text2 = "[" + response2.content[0].text.strip()
+    text2 = "[{" + response2.content[0].text.strip()
     if text2.rstrip().endswith("```"):
         text2 = text2.rstrip()[:-3]
 
-    ideas = json.loads(text2)
-    return ideas
+    try:
+        ideas = json.loads(text2)
+        if isinstance(ideas, list) and len(ideas) > 0:
+            return ideas
+    except json.JSONDecodeError:
+        pass
+
+    raise ValueError(
+        f"Could not extract ideas after 2 attempts. "
+        f"Response started with: {text[:200]}"
+    )
 
 
 def generate_batch(
