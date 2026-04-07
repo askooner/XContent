@@ -27,49 +27,66 @@ def _get_api_key() -> str:
     return key
 
 
-def _headers() -> dict:
-    return {
-        "Authorization": f"Bearer {_get_api_key()}",
-        "Content-Type": "application/json",
-    }
+def _try_v1(content: str) -> dict | None:
+    """Try creating a draft via v1 API. Returns result or None if it fails."""
+    api_key = _get_api_key()
+
+    # Try both header formats for v1
+    for headers in [
+        {"X-API-KEY": f"Bearer {api_key}", "Content-Type": "application/json"},
+        {"X-API-KEY": api_key, "Content-Type": "application/json"},
+    ]:
+        resp = requests.post(
+            "https://api.typefully.com/v1/drafts/",
+            headers=headers,
+            json={"content": content, "threadify": False},
+        )
+        if resp.status_code == 200:
+            return resp.json()
+
+    return None
 
 
 def _get_social_set_id() -> str:
-    """Fetch the first social set ID from the account."""
+    """Fetch the social set ID from the account (v2)."""
     global _social_set_id_cache
     if _social_set_id_cache:
         return _social_set_id_cache
 
-    response = requests.get(
-        "https://api.typefully.com/v2/social-sets",
-        headers=_headers(),
+    api_key = _get_api_key()
+
+    # Try both auth header formats
+    for headers in [
+        {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        {"X-API-KEY": f"Bearer {api_key}", "Content-Type": "application/json"},
+        {"X-API-KEY": api_key, "Content-Type": "application/json"},
+    ]:
+        resp = requests.get("https://api.typefully.com/v2/social-sets", headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            sets = data if isinstance(data, list) else data.get("data", data.get("social_sets", []))
+            if sets:
+                _social_set_id_cache = sets[0]["id"]
+                return _social_set_id_cache
+
+    raise RuntimeError(
+        "Could not fetch social sets from Typefully.\n"
+        "Your API key may be an MCP-only key.\n"
+        "Go to https://typefully.com/settings/api and generate a REST API key."
     )
-    response.raise_for_status()
-    data = response.json()
-
-    # Response could be a list or have a 'data' key
-    sets = data if isinstance(data, list) else data.get("data", data.get("social_sets", []))
-    if not sets:
-        raise RuntimeError("No social sets found in your Typefully account.")
-
-    _social_set_id_cache = sets[0]["id"]
-    return _social_set_id_cache
 
 
-def create_draft(content: str) -> dict:
-    """Create a new draft in Typefully via v2 API.
-
-    Args:
-        content: The post text.
-
-    Returns:
-        Dict with draft info from the API.
-    """
+def _try_v2(content: str) -> dict:
+    """Create draft via v2 API."""
     social_set_id = _get_social_set_id()
+    api_key = _get_api_key()
 
-    response = requests.post(
+    resp = requests.post(
         f"https://api.typefully.com/v2/social-sets/{social_set_id}/drafts",
-        headers=_headers(),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
         json={
             "platforms": {
                 "x": {
@@ -79,21 +96,26 @@ def create_draft(content: str) -> dict:
             }
         },
     )
+    resp.raise_for_status()
+    return resp.json()
 
-    if response.status_code == 401:
-        raise RuntimeError(
-            "Typefully API key is invalid. Check your TYPEFULLY_API_KEY in .env\n"
-            "Get a new one at https://typefully.com/settings/api"
-        )
-    if response.status_code == 403:
-        raise RuntimeError(
-            f"Typefully API returned 403. Response: {response.text}"
-        )
-    if response.status_code == 429:
-        raise RuntimeError("Typefully rate limit hit. Wait a moment and try again.")
 
-    response.raise_for_status()
-    return response.json()
+def create_draft(content: str) -> dict:
+    """Create a new draft in Typefully. Tries v1 first, falls back to v2.
+
+    Args:
+        content: The post text.
+
+    Returns:
+        Dict with draft info from the API.
+    """
+    # Try v1 first (simpler, no social set needed)
+    result = _try_v1(content)
+    if result is not None:
+        return result
+
+    # Fall back to v2
+    return _try_v2(content)
 
 
 def push_drafts(posts: list[str]) -> list[dict]:
