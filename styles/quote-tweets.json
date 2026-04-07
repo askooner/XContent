@@ -1,9 +1,13 @@
 {
   "name": "quote-tweets",
-  "description": "Short and punchy. Just a powerful quote in quotation marks, a line break, then '~ [Person's Name]'. Used as a quote tweet on someone else's post. Minimal — the quote does all the work. No commentary, no fluff.",
+  "description": "Quote tweets over someone else's post (usually David Senra / Founders Podcast). Your text sits above the quoted tweet. It's SHORT — 1-3 sentences max. Either: (1) a killer quote from the source with attribution, (2) a bold one-line take or framing that adds context, (3) a personal connection ('This made me think of...') plus a related quote. The quote tweet text should make someone want to click into the quoted post. No lengthy analysis.",
   "examples": [
-    "\"Failure is not an option. There's no option. It's success or death.\"\n\n~ Michael Ovitz"
+    "Peter Thiel on Demis:\n\n\u201cI always say that people aren't really entrepreneurs in the abstract, but there's maybe one great company that somebody has in them. It was Demis's destiny to build this one.\u201d",
+    "You don't grind to a $20 billion net worth without complete product quality obsession. This is the perfect example of what true product obsession sounds like:",
+    "One of my favorite parts from Todd Graves's story is where his CFO suggested using slightly lower quality ingredients so they could make more money and Todd fired him",
+    "\"Failure is not an option. There's no option. It's success or death.\"\n\n~ Michael Ovitz",
+    "This made me think of a great line I once read in a biography of Frank Lloyd Wright:\n\n\u201cThere are only two or three human stories, and they go on repeating themselves as fiercely as if they had never happened before.\u201d"
   ],
   "created_at": "2026-04-06T00:00:00",
-  "updated_at": "2026-04-06T00:00:00"
+  "updated_at": "2026-04-07T00:00:00"
 }
