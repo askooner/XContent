@@ -158,6 +158,62 @@ def style_remove(name):
         console.print(f"[red]Style '{name}' not found.[/red]")
 
 
+@style.command("add-example")
+@click.argument("name")
+@click.option("--file", "-f", "files", multiple=True, help="Text files with example posts")
+def style_add_example(name, files):
+    """Add more example posts to an existing style (makes output better)."""
+    from .style_manager import load_style, update_style
+
+    try:
+        profile = load_style(name)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        return
+
+    existing = profile.get("examples", [])
+    new_examples = []
+
+    if files:
+        for f in files:
+            with open(f) as fh:
+                new_examples.append(fh.read().strip())
+    else:
+        console.print(
+            f"[cyan]Style '{name}' currently has {len(existing)} examples.[/cyan]\n"
+            "Paste additional examples. Enter twice (empty line) after each.\n"
+            "Type DONE when finished."
+        )
+        while True:
+            console.print(f"\n[cyan]Example {len(existing) + len(new_examples) + 1}[/cyan] (or DONE):")
+            lines = []
+            while True:
+                try:
+                    line = input()
+                except EOFError:
+                    break
+                if line.strip() == "DONE":
+                    break
+                if line == "" and lines and lines[-1] == "":
+                    lines.pop()
+                    break
+                lines.append(line)
+
+            text = "\n".join(lines).strip()
+            if not text or text == "DONE":
+                break
+            new_examples.append(text)
+            console.print(f"[green]Added example ({len(text)} chars)[/green]")
+
+    if not new_examples:
+        console.print("[yellow]No examples added.[/yellow]")
+        return
+
+    update_style(name, examples=existing + new_examples)
+    console.print(f"\n[bold green]Added {len(new_examples)} examples to '{name}' "
+                  f"(now {len(existing) + len(new_examples)} total).[/bold green]")
+
+
 # ── Source Commands ──────────────────────────────────────────────────
 
 
@@ -451,7 +507,7 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
 @click.option("--type", "-T", "content_type", default="insights",
               type=click.Choice(["insights", "essays", "transcripts", "quote-tweets"]),
               help="Content format for all posts")
-@click.option("--num", "-n", "num_posts", default=5, help="Number of posts to generate (default: 5)")
+@click.option("--num", "-n", "num_posts", default=0, help="Number of posts (0 = auto-detect based on content)")
 @click.option("--transcript-file", default=None, help="Path to a transcript file")
 @click.option("--model", "-m", default=None, help="Claude model to use")
 @click.option("--instructions", "-i", default="", help="Additional instructions for all posts")
@@ -531,10 +587,13 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
         return
 
     # Generate batch
-    console.print(f"[bold]Extracting {num_posts} post ideas and generating content...[/bold]\n")
+    if num_posts > 0:
+        console.print(f"[bold]Extracting {num_posts} post ideas and generating content...[/bold]\n")
+    else:
+        console.print(f"[bold]Mining transcript for all post-worthy ideas...[/bold]\n")
 
     try:
-        with console.status(f"Step 1: Mining transcript for {num_posts} distinct ideas..."):
+        with console.status("Step 1: Mining transcript for post ideas..."):
             from .content_generator import extract_ideas
             ideas = extract_ideas(transcript_text, video_title, num_ideas=num_posts)
 

@@ -64,11 +64,13 @@ def _extract_key_material(client, transcript: str, topic: str, focus: str, video
     return response.content[0].text
 
 
-def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 5) -> list[dict]:
+def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) -> list[dict]:
     """Extract multiple distinct post ideas from a single transcript.
 
+    Args:
+        num_ideas: Target number. 0 = auto-detect (find as many good ones as exist).
+
     Returns a list of dicts with 'title', 'angle', and 'key_material' for each idea.
-    This is the first step of batch mode — one cheap Haiku call to mine the whole video.
     """
     client = _get_anthropic_client()
 
@@ -77,24 +79,37 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 5) ->
     if len(extract_transcript) > 80_000:
         extract_transcript = extract_transcript[:80_000]
 
+    if num_ideas > 0:
+        count_instruction = f"Extract exactly {num_ideas} distinct post ideas."
+    else:
+        count_instruction = (
+            "Extract as many distinct post ideas as you can find. "
+            "A 10-minute video might have 2-3. A 60-minute podcast might have 8-12. "
+            "Only include ideas that are genuinely interesting and different from each other. "
+            "Quality over quantity — skip anything generic."
+        )
+
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=4000,
+        max_tokens=6000,
         system=(
             "You extract post ideas from transcripts. Output ONLY a valid JSON array.\n\n"
             "Each object must have exactly these 3 keys:\n"
-            '- "title": short post title\n'
+            '- "title": short post title (specific, not generic)\n'
             '- "angle": the hook / why it\'s interesting (1 sentence)\n'
-            '- "key_material": the actual quotes and facts to build the post from (include direct quotes)\n\n'
+            '- "key_material": the actual quotes and facts to build the post from '
+            "(include DIRECT QUOTES from the transcript, specific numbers, names, stories)\n\n"
             "Rules:\n"
             "- Each idea must be a DIFFERENT topic/story — not variations of the same thing\n"
             "- Include actual quotes from the transcript in key_material\n"
             "- Focus on stories, contrarian takes, surprising facts, frameworks\n"
+            "- Skip generic insights like 'work hard' or 'be passionate' — only the stuff\n"
+            "  that would make someone stop scrolling\n"
             "- Output ONLY the JSON array. No text before or after it. No markdown."
         ),
         messages=[{"role": "user", "content": (
             f"Source: {video_title}\n\n"
-            f"Extract exactly {num_ideas} distinct post ideas.\n\n"
+            f"{count_instruction}\n\n"
             f"--- TRANSCRIPT ---\n{extract_transcript}\n--- END TRANSCRIPT ---"
         )}],
     )
@@ -332,46 +347,43 @@ def _build_system_prompt(style_prompt: str, content_type: str) -> str:
     """Build the full system prompt combining style + content type instructions."""
     content_type_instructions = {
         "insights": (
-            "You are writing an INSIGHTS post. Format:\n"
-            "- Open with '[Person], [title/role], on [specific topic]:'\n"
-            "- Alternate between direct quotes from the source and your short commentary/analysis\n"
-            "- Use lots of line breaks — every sentence or two gets its own paragraph\n"
-            "- Weave a narrative thread: set up the context, build the insight, deliver the payoff\n"
-            "- End with a punchy 1-2 line takeaway (often after 'The result?' or similar)\n"
-            "- Use quotation marks for direct quotes from the person\n"
-            "- Keep commentary sharp and brief — let the quotes do the heavy lifting\n"
-            "- This is a Twitter/X post, keep it concise but complete"
+            "You are writing an INSIGHTS post for Twitter/X.\n"
+            "- Pull a specific story, framework, or decision from the source material\n"
+            "- Mix direct quotes with your own sharp commentary\n"
+            "- Use lots of line breaks — short paragraphs, punchy rhythm\n"
+            "- End with a strong takeaway or provocative closing line\n"
+            "- VARY your openings — do NOT always start with '[Person] on [topic]'\n"
+            "  Instead, try: a bold claim, a surprising stat, a question, a story hook,\n"
+            "  a contrarian take, or drop straight into a quote\n"
+            "- The hook (first 1-2 lines) must stop someone mid-scroll\n"
+            "- Keep it concise but complete"
         ),
         "essays": (
-            "You are writing an ESSAY post. Format:\n"
-            "- Open with a title or quote attribution in quotes (e.g. '\"Don't be a Career\" by Steve Jobs')\n"
-            "- Present the person's words and ideas in flowing, thoughtful paragraphs\n"
-            "- This is more curated excerpt than commentary — let the source material breathe\n"
-            "- Minimal editorial voice — you're presenting their wisdom, not analyzing it\n"
+            "You are writing an ESSAY post for Twitter/X.\n"
+            "- Open with a title/attribution OR a thought-provoking framing\n"
+            "- Present the person's words and ideas in flowing paragraphs\n"
+            "- Let the source material breathe — minimal editorial voice\n"
+            "- The tone is reverent and thoughtful\n"
             "- Use paragraph breaks between distinct ideas\n"
-            "- The tone is reverent and thoughtful, like sharing something profound you found\n"
-            "- This is a Twitter/X post, but longer-form — use the full character space"
+            "- VARY your openings — don't always use the same title format"
         ),
         "transcripts": (
-            "You are writing a TRANSCRIPT-STYLE post. Format:\n"
-            "- Hook line at the top (e.g. 'Lessons Steve Jobs wanted to pass on.')\n"
-            "- Short dramatic context line (e.g. 'Written right before he died.')\n"
-            "- Then 'In his/her own words:'\n"
-            "- Numbered sections (1. 2. 3. etc.) with ALL CAPS topic headers\n"
-            "- Under each header, the person's direct quote on that topic\n"
-            "- Like a curated listicle of the best moments from a talk or interview\n"
-            "- Pick the 5-8 most powerful/interesting points from the source material\n"
-            "- This is a Twitter/X post — structured and scannable"
+            "You are writing a TRANSCRIPT-STYLE post for Twitter/X.\n"
+            "- Hook line at the top that creates curiosity\n"
+            "- Optional dramatic context line\n"
+            "- Then 'In his/her own words:' or similar\n"
+            "- Numbered sections with ALL CAPS topic headers\n"
+            "- Under each header, the person's direct quote\n"
+            "- Pick the 5-8 most powerful points from the source\n"
+            "- VARY your hook — don't always use the same formula"
         ),
         "quote-tweets": (
-            "You are writing a QUOTE TWEET. Format:\n"
-            "- Find the single most powerful quote from the source material\n"
+            "You are writing a QUOTE TWEET.\n"
+            "- Find the single most powerful quote from the source\n"
             "- Put it in quotation marks\n"
             "- Line break, then '~ [Person's Full Name]'\n"
-            "- That's it. No commentary, no analysis, no fluff\n"
-            "- The quote should be punchy, memorable, and stand completely on its own\n"
-            "- Max 2-3 sentences for the quote — shorter is better\n"
-            "- This is designed to be posted as a quote tweet over someone else's post"
+            "- No commentary. The quote does all the work.\n"
+            "- Max 2-3 sentences — shorter is better"
         ),
     }
 
