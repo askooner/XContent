@@ -367,7 +367,8 @@ def _format_time(seconds: float) -> str:
 @click.option("--transcript-file", default=None, help="Path to a transcript file (instead of --video)")
 @click.option("--model", "-m", default=None, help="Claude model to use")
 @click.option("--no-save", is_flag=True, help="Don't save the output to a file")
-def write(style_name, video_id, topic, focus, content_type, instructions, transcript_file, model, no_save):
+@click.option("--no-typefully", is_flag=True, help="Don't push to Typefully (local save only)")
+def write(style_name, video_id, topic, focus, content_type, instructions, transcript_file, model, no_save, no_typefully):
     """Generate content in your style from a source transcript.
 
     If no --video is given but --topic is, it will search your channels
@@ -496,6 +497,21 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
     if path:
         console.print(f"[dim]Saved to: {path}[/dim]")
 
+    # Push to Typefully
+    if not no_typefully:
+        try:
+            from .typefully import create_draft
+            with console.status("Pushing to Typefully..."):
+                result = create_draft(content)
+            console.print("[green]Pushed to Typefully as a draft.[/green]")
+        except RuntimeError as e:
+            if "TYPEFULLY_API_KEY not set" in str(e):
+                pass  # Silently skip if no key configured
+            else:
+                console.print(f"[yellow]Typefully: {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Typefully push failed: {e}[/yellow]")
+
 
 # ── Batch Command ────────────────────────────────────────────────────
 
@@ -511,7 +527,8 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
 @click.option("--transcript-file", default=None, help="Path to a transcript file")
 @click.option("--model", "-m", default=None, help="Claude model to use")
 @click.option("--instructions", "-i", default="", help="Additional instructions for all posts")
-def batch(style_name, video_id, topic, content_type, num_posts, transcript_file, model, instructions):
+@click.option("--no-typefully", is_flag=True, help="Don't push to Typefully (local save only)")
+def batch(style_name, video_id, topic, content_type, num_posts, transcript_file, model, instructions, no_typefully):
     """Generate multiple posts from a single video.
 
     Extracts 4-5+ distinct ideas from one transcript and writes a separate
@@ -684,6 +701,21 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
         console.print(f"[green]All {len(results)} posts copied to clipboard (separated by ---).[/green]")
     except Exception:
         pass
+
+    # Push all to Typefully
+    if not no_typefully:
+        try:
+            from .typefully import push_drafts
+            with console.status(f"Pushing {len(results)} drafts to Typefully..."):
+                drafts = push_drafts([c for c, _ in results])
+            console.print(f"[green]Pushed {len(drafts)} drafts to Typefully.[/green]")
+        except RuntimeError as e:
+            if "TYPEFULLY_API_KEY not set" in str(e):
+                pass  # Silently skip if no key configured
+            else:
+                console.print(f"[yellow]Typefully: {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Typefully push failed: {e}[/yellow]")
 
 
 # ── History ──────────────────────────────────────────────────────────
