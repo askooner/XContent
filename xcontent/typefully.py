@@ -7,13 +7,14 @@ Typefully drafts queue so they're ready to schedule and publish.
 
 from __future__ import annotations
 
-import json
 import os
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_social_set_id_cache = None
 
 
 def _get_api_key() -> str:
@@ -26,29 +27,56 @@ def _get_api_key() -> str:
     return key
 
 
-def create_draft(content: str, threadify: bool = False, share: bool = False) -> dict:
-    """Create a new draft in Typefully.
+def _headers() -> dict:
+    return {
+        "Authorization": f"Bearer {_get_api_key()}",
+        "Content-Type": "application/json",
+    }
+
+
+def _get_social_set_id() -> str:
+    """Fetch the first social set ID from the account."""
+    global _social_set_id_cache
+    if _social_set_id_cache:
+        return _social_set_id_cache
+
+    response = requests.get(
+        "https://api.typefully.com/v2/social-sets",
+        headers=_headers(),
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    # Response could be a list or have a 'data' key
+    sets = data if isinstance(data, list) else data.get("data", data.get("social_sets", []))
+    if not sets:
+        raise RuntimeError("No social sets found in your Typefully account.")
+
+    _social_set_id_cache = sets[0]["id"]
+    return _social_set_id_cache
+
+
+def create_draft(content: str) -> dict:
+    """Create a new draft in Typefully via v2 API.
 
     Args:
-        content: The post text. For threads, separate tweets with \\n\\n\\n\\n (4 newlines).
-        threadify: If True, Typefully auto-splits long content into a thread.
-        share: If True, returns a share URL for the draft.
+        content: The post text.
 
     Returns:
-        Dict with draft info (id, share_url if requested).
+        Dict with draft info from the API.
     """
-    api_key = _get_api_key()
+    social_set_id = _get_social_set_id()
 
     response = requests.post(
-        "https://api.typefully.com/v1/drafts/",
-        headers={
-            "X-API-KEY": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        f"https://api.typefully.com/v2/social-sets/{social_set_id}/drafts",
+        headers=_headers(),
         json={
-            "content": content,
-            "threadify": threadify,
-            "share": share,
+            "platforms": {
+                "x": {
+                    "enabled": True,
+                    "posts": [{"text": content}],
+                }
+            }
         },
     )
 
@@ -57,6 +85,10 @@ def create_draft(content: str, threadify: bool = False, share: bool = False) -> 
             "Typefully API key is invalid. Check your TYPEFULLY_API_KEY in .env\n"
             "Get a new one at https://typefully.com/settings/api"
         )
+    if response.status_code == 403:
+        raise RuntimeError(
+            f"Typefully API returned 403. Response: {response.text}"
+        )
     if response.status_code == 429:
         raise RuntimeError("Typefully rate limit hit. Wait a moment and try again.")
 
@@ -64,18 +96,17 @@ def create_draft(content: str, threadify: bool = False, share: bool = False) -> 
     return response.json()
 
 
-def push_drafts(posts: list[str], threadify: bool = False) -> list[dict]:
+def push_drafts(posts: list[str]) -> list[dict]:
     """Push multiple posts as separate Typefully drafts.
 
     Args:
         posts: List of post texts.
-        threadify: If True, auto-split long posts into threads.
 
     Returns:
         List of draft results from the API.
     """
     results = []
     for post in posts:
-        result = create_draft(post, threadify=threadify)
+        result = create_draft(post)
         results.append(result)
     return results
