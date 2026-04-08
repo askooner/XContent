@@ -13,7 +13,6 @@ setup(
         "python-dotenv>=1.0.0",
         "pyyaml>=6.0",
         "requests>=2.28.0",
-        "google-generativeai>=0.8.0",
     ],
     entry_points={
         "console_scripts": [

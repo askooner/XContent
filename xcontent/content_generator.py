@@ -2,16 +2,13 @@
 Content Generator — Combine your style + source material to produce posts.
 
 This is the assembly line: your style is the template, YouTube transcripts
-are the raw material, and AI does the assembly.
-
-Supports both Gemini (default) and Anthropic as backends.
+are the raw material, and Claude does the assembly.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 from datetime import datetime
 from pathlib import Path
 
@@ -26,26 +23,6 @@ def _ensure_content_dir():
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ── AI Backend ──────────────────────────────────────────────────────
-
-
-def _use_gemini() -> bool:
-    return os.getenv("AI_PROVIDER", "gemini").lower() == "gemini"
-
-
-def _get_gemini_model(model_name: str | None = None, system: str = ""):
-    import google.generativeai as genai
-
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY not set. Add it to your .env file."
-        )
-    genai.configure(api_key=api_key)
-    model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-    return genai.GenerativeModel(model_name, system_instruction=system or None)
-
-
 def _get_anthropic_client():
     import anthropic
 
@@ -58,63 +35,46 @@ def _get_anthropic_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
-def _call_ai(system: str, user_message: str, model: str | None = None, max_tokens: int = 4096) -> str:
-    """Unified AI call — routes to Gemini or Anthropic based on config."""
-    if _use_gemini():
-        m = _get_gemini_model(model_name=model, system=system)
-        response = m.generate_content(user_message)
-        return response.text
-    else:
-        client = _get_anthropic_client()
-        model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-        response = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        return response.content[0].text
-
-
-# ── Extraction & Generation ─────────────────────────────────────────
-
-
-def _extract_key_material(transcript: str, topic: str, focus: str, video_title: str) -> str:
-    """Step 1: Cheaply extract only the relevant parts of a long transcript."""
+def _extract_key_material(client, transcript: str, topic: str, focus: str, video_title: str) -> str:
+    """Step 1: Use Haiku to cheaply extract only the relevant parts of a long transcript."""
     extract_prompt = "Extract the most important quotes, stories, numbers, and insights"
     if topic:
         extract_prompt += f" related to: {topic}"
     if focus:
         extract_prompt += f" (focus on: {focus})"
 
-    system = (
-        "You are a research assistant. Your job is to extract the best raw material "
-        "from a transcript for a content writer. Pull out:\n"
-        "- The most powerful direct quotes (keep them exact)\n"
-        "- Specific stories, anecdotes, and examples\n"
-        "- Interesting numbers, facts, and data points\n"
-        "- Key insights and frameworks\n\n"
-        "Output ONLY the extracted material. No commentary. No summaries. "
-        "Just the raw gold — quotes and facts, organized by theme."
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=2000,
+        system=(
+            "You are a research assistant. Your job is to extract the best raw material "
+            "from a transcript for a content writer. Pull out:\n"
+            "- The most powerful direct quotes (keep them exact)\n"
+            "- Specific stories, anecdotes, and examples\n"
+            "- Interesting numbers, facts, and data points\n"
+            "- Key insights and frameworks\n\n"
+            "Output ONLY the extracted material. No commentary. No summaries. "
+            "Just the raw gold — quotes and facts, organized by theme."
+        ),
+        messages=[{"role": "user", "content": (
+            f"Source: {video_title}\n\n{extract_prompt}\n\n"
+            f"--- TRANSCRIPT ---\n{transcript}\n--- END TRANSCRIPT ---"
+        )}],
     )
-
-    user_msg = (
-        f"Source: {video_title}\n\n{extract_prompt}\n\n"
-        f"--- TRANSCRIPT ---\n{transcript}\n--- END TRANSCRIPT ---"
-    )
-
-    return _call_ai(system, user_msg, max_tokens=2000)
+    return response.content[0].text
 
 
 def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) -> list[dict]:
     """Extract multiple distinct post ideas from a single transcript.
 
     Args:
-        num_ideas: Target number. 0 = auto-detect based on transcript length.
+        num_ideas: Target number. 0 = auto-detect (find as many good ones as exist).
 
     Returns a list of dicts with 'title', 'angle', and 'key_material' for each idea.
     """
-    # For very long transcripts, truncate to save costs
+    client = _get_anthropic_client()
+
+    # For very long transcripts, truncate to save costs on the extraction call
     extract_transcript = transcript
     if len(extract_transcript) > 80_000:
         extract_transcript = extract_transcript[:80_000]
@@ -131,32 +91,38 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
         else:
             num_ideas = 10
 
-    system = (
-        "You extract post ideas from transcripts. Output ONLY a valid JSON array.\n\n"
-        "Each object must have exactly these 3 keys:\n"
-        '- "title": short post title (specific, not generic)\n'
-        '- "angle": the hook / why it\'s interesting (1 sentence)\n'
-        '- "key_material": the actual quotes and facts to build the post from '
-        "(include DIRECT QUOTES from the transcript, specific numbers, names, stories)\n\n"
-        "Rules:\n"
-        "- Each idea must be a DIFFERENT topic/story — not variations of the same thing\n"
-        "- Include actual quotes from the transcript in key_material\n"
-        "- Focus on stories, contrarian takes, surprising facts, frameworks\n"
-        "- Skip generic insights like 'work hard' or 'be passionate' — only the stuff\n"
-        "  that would make someone stop scrolling\n"
-        "- Output ONLY the JSON array. No text before or after it. No markdown."
+    count_instruction = f"Extract exactly {num_ideas} distinct post ideas."
+
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=6000,
+        system=(
+            "You extract post ideas from transcripts. Output ONLY a valid JSON array.\n\n"
+            "Each object must have exactly these 3 keys:\n"
+            '- "title": short post title (specific, not generic)\n'
+            '- "angle": the hook / why it\'s interesting (1 sentence)\n'
+            '- "key_material": the actual quotes and facts to build the post from '
+            "(include DIRECT QUOTES from the transcript, specific numbers, names, stories)\n\n"
+            "Rules:\n"
+            "- Each idea must be a DIFFERENT topic/story — not variations of the same thing\n"
+            "- Include actual quotes from the transcript in key_material\n"
+            "- Focus on stories, contrarian takes, surprising facts, frameworks\n"
+            "- Skip generic insights like 'work hard' or 'be passionate' — only the stuff\n"
+            "  that would make someone stop scrolling\n"
+            "- Output ONLY the JSON array. No text before or after it. No markdown."
+        ),
+        messages=[{"role": "user", "content": (
+            f"Source: {video_title}\n\n"
+            f"{count_instruction}\n\n"
+            f"--- TRANSCRIPT ---\n{extract_transcript}\n--- END TRANSCRIPT ---"
+        )}],
     )
 
-    user_msg = (
-        f"Source: {video_title}\n\n"
-        f"Extract exactly {num_ideas} distinct post ideas.\n\n"
-        f"--- TRANSCRIPT ---\n{extract_transcript}\n--- END TRANSCRIPT ---"
-    )
-
-    text = _call_ai(system, user_msg, max_tokens=6000).strip()
+    text = response.content[0].text.strip()
 
     # Strip markdown code fences if present
     if text.startswith("```"):
+        # Remove first line (```json or ```) and last line (```)
         lines = text.split("\n")
         text = "\n".join(lines[1:])
         if text.rstrip().endswith("```"):
@@ -171,6 +137,7 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
         pass
 
     # Fallback: find the JSON array in the text
+    import re
     match = re.search(r'\[[\s\S]*\]', text)
     if match:
         try:
@@ -180,22 +147,25 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
         except json.JSONDecodeError:
             pass
 
-    # Last resort: retry with stronger instruction
-    retry_msg = (
-        f"Source: {video_title}\n\n"
-        f"Extract exactly {num_ideas} distinct post ideas from this transcript. "
-        f"Each must have: title, angle, key_material (with direct quotes). "
-        f"Output ONLY a JSON array. Start your response with [ and end with ].\n\n"
-        f"--- TRANSCRIPT ---\n{extract_transcript[:40000]}\n--- END TRANSCRIPT ---"
+    # Last resort: prefill assistant response to force JSON
+    response2 = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=6000,
+        messages=[
+            {"role": "user", "content": (
+                f"Source: {video_title}\n\n"
+                f"Extract exactly {num_ideas} distinct post ideas from this transcript. "
+                f"Each must have: title, angle, key_material (with direct quotes). "
+                f"Output ONLY a JSON array.\n\n"
+                f"--- TRANSCRIPT ---\n{extract_transcript[:40000]}\n--- END TRANSCRIPT ---"
+            )},
+            {"role": "assistant", "content": "[{"},
+        ],
     )
 
-    text2 = _call_ai(system, retry_msg, max_tokens=6000).strip()
-
-    if text2.startswith("```"):
-        lines = text2.split("\n")
-        text2 = "\n".join(lines[1:])
-        if text2.rstrip().endswith("```"):
-            text2 = text2.rstrip()[:-3]
+    text2 = "[{" + response2.content[0].text.strip()
+    if text2.rstrip().endswith("```"):
+        text2 = text2.rstrip()[:-3]
 
     try:
         ideas = json.loads(text2)
@@ -222,14 +192,16 @@ def generate_batch(
 ) -> list[tuple[str, Path]]:
     """Generate multiple posts from a single transcript.
 
-    Step 1: Extract N distinct ideas (one cheap call)
-    Step 2: Generate a post for each idea (N cheap calls)
+    Step 1: Extract N distinct ideas (one cheap Haiku call)
+    Step 2: Generate a post for each idea (N cheap Haiku calls)
 
     Returns list of (content, file_path) tuples.
     """
     from .style_manager import build_style_prompt
 
     _ensure_content_dir()
+    client = _get_anthropic_client()
+    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
     # Step 1: Extract ideas
     ideas = extract_ideas(transcript, video_title, num_ideas=num_posts)
@@ -252,7 +224,14 @@ def generate_batch(
             video_title=video_title,
         )
 
-        content = _call_ai(system_prompt, user_prompt, model=model)
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        content = response.content[0].text
 
         # Save each post
         slug = _slugify(title)
@@ -294,20 +273,34 @@ def generate(
     """Generate content in your style from a transcript.
 
     For long transcripts (>15K chars), uses a two-step process:
-    1. Cheaply extract the relevant quotes/stories/facts
-    2. Generate the post from the compressed material
+    1. Haiku cheaply extracts the relevant quotes/stories/facts
+    2. The writing model generates the post from the compressed material
+
+    This cuts costs by ~80% on long transcripts.
     """
     from .style_manager import build_style_prompt
 
+    client = _get_anthropic_client()
+    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
     # For long transcripts, extract key material first (cheap step)
     if len(transcript) > 15_000:
-        transcript = _extract_key_material(transcript, topic, focus, video_title)
+        transcript = _extract_key_material(client, transcript, topic, focus, video_title)
 
     style_prompt = build_style_prompt(style_name)
+
     system_prompt = _build_system_prompt(style_prompt, content_type)
     user_prompt = _build_user_prompt(transcript, topic, focus, additional_instructions, video_title)
 
-    return _call_ai(system_prompt, user_prompt, model=model)
+    response = client.messages.create(
+        model=model,
+        max_tokens=4096,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+
+    content = response.content[0].text
+    return content
 
 
 def generate_and_save(
@@ -315,13 +308,17 @@ def generate_and_save(
     transcript: str,
     topic: str = "",
     focus: str = "",
-    content_type: str = "insights",
+    content_type: str = "linkedin",
     additional_instructions: str = "",
     model: str | None = None,
     video_title: str = "",
     video_id: str = "",
 ) -> tuple[str, Path]:
-    """Generate content and save it to the content directory."""
+    """Generate content and save it to the content directory.
+
+    Returns:
+        Tuple of (generated_content, file_path).
+    """
     _ensure_content_dir()
 
     content = generate(
@@ -335,13 +332,16 @@ def generate_and_save(
         video_title=video_title,
     )
 
+    # Save as plain text (easy to copy/share) + metadata sidecar
     slug = _slugify(topic or video_title or "untitled")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = f"{timestamp}_{slug}"
 
+    # Plain text file — just the post, nothing else
     txt_path = CONTENT_DIR / f"{base}.txt"
     txt_path.write_text(content)
 
+    # Metadata sidecar
     meta = {
         "style": style_name,
         "content_type": content_type,
@@ -457,6 +457,7 @@ def _build_user_prompt(
     if additional_instructions:
         parts.append(f"Additional instructions: {additional_instructions}")
 
+    # Truncate very long transcripts to avoid token limits
     max_transcript_chars = 100_000
     if len(transcript) > max_transcript_chars:
         transcript = transcript[:max_transcript_chars] + "\n\n[Transcript truncated for length]"
@@ -469,6 +470,8 @@ def _build_user_prompt(
 
 def _slugify(text: str) -> str:
     """Convert text to a filename-safe slug."""
+    import re
+
     text = text.lower().strip()
     text = re.sub(r"[^\w\s-]", "", text)
     text = re.sub(r"[-\s]+", "-", text)
