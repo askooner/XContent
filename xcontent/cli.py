@@ -624,15 +624,10 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
         results = []
         for i, idea in enumerate(ideas, 1):
             with console.status(f"Writing post {i}/{len(ideas)}: {idea.get('title', '')}..."):
-                from .content_generator import generate, _slugify
+                from .content_generator import _call_ai, _build_system_prompt, _build_user_prompt, _slugify
                 from .style_manager import build_style_prompt
 
                 style_prompt = build_style_prompt(style_name)
-
-                from .content_generator import _build_system_prompt, _build_user_prompt, _get_anthropic_client
-                client = _get_anthropic_client()
-                write_model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-
                 system_prompt = _build_system_prompt(style_prompt, content_type)
                 key_material = idea.get("key_material", idea.get("key_quotes", ""))
                 user_prompt = _build_user_prompt(
@@ -643,13 +638,7 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
                     video_title=video_title,
                 )
 
-                response = client.messages.create(
-                    model=write_model,
-                    max_tokens=4096,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}],
-                )
-                content = response.content[0].text
+                content = _call_ai(system_prompt, user_prompt, model=model)
 
                 # Save
                 from pathlib import Path as P
