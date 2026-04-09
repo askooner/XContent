@@ -303,6 +303,182 @@ def generate(
     return content
 
 
+def generate_quote_reply(
+    tweet_text: str,
+    style_name: str,
+    model: str | None = None,
+    additional_instructions: str = "",
+) -> tuple[str, list[dict]]:
+    """Generate a quote-tweet reply that ties the original tweet to a real entrepreneur story.
+
+    Steps:
+    1. Extract the core idea/theme from the tweet
+    2. Search the transcript library for related stories, quotes, facts
+    3. Generate a quote reply grounded in REAL material from the library
+
+    Returns:
+        Tuple of (generated reply text, list of source transcripts used)
+    """
+    from .knowledge_base import search_transcripts, get_transcript_text
+    from .style_manager import build_style_prompt
+
+    client = _get_anthropic_client()
+    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+    # Step 1: Extract keywords/themes from the tweet for library search
+    theme_response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=200,
+        system=(
+            "Extract 3-5 search keywords from this tweet that would help find "
+            "related stories in a library of entrepreneur/business transcripts. "
+            "Output ONLY the keywords, one per line. No commentary."
+        ),
+        messages=[{"role": "user", "content": tweet_text}],
+    )
+    keywords = theme_response.content[0].text.strip().split("\n")
+    keywords = [k.strip() for k in keywords if k.strip()]
+
+    # Step 2: Search library for related material
+    all_matches = []
+    seen_videos = set()
+    for keyword in keywords:
+        matches = search_transcripts(keyword, limit=5)
+        for m in matches:
+            if m["video_id"] not in seen_videos:
+                seen_videos.add(m["video_id"])
+                all_matches.append(m)
+
+    if not all_matches:
+        # No library matches — generate without transcript backing
+        return _generate_quote_reply_no_library(
+            client, tweet_text, style_name, model, additional_instructions
+        ), []
+
+    # Step 3: Pull relevant excerpts from top matches (up to 3 transcripts)
+    top_matches = all_matches[:3]
+    source_material = []
+    for match in top_matches:
+        full_text = get_transcript_text(match["video_id"])
+        if not full_text:
+            continue
+
+        # Extract relevant parts only (cheap call)
+        extract = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1500,
+            system=(
+                "Extract ONLY the parts of this transcript that relate to the tweet below. "
+                "Pull out specific quotes, stories, numbers, and facts. "
+                "If nothing is relevant, say NOTHING_RELEVANT.\n\n"
+                f"TWEET: {tweet_text}"
+            ),
+            messages=[{"role": "user", "content": full_text[:60000]}],
+        )
+        extracted = extract.content[0].text.strip()
+        if "NOTHING_RELEVANT" not in extracted:
+            source_material.append({
+                "video_title": match["video_title"],
+                "channel": match.get("channel", ""),
+                "material": extracted,
+            })
+
+    if not source_material:
+        return _generate_quote_reply_no_library(
+            client, tweet_text, style_name, model, additional_instructions
+        ), []
+
+    # Step 4: Generate the quote reply grounded in real material
+    style_prompt = build_style_prompt(style_name)
+
+    sources_text = ""
+    for s in source_material:
+        sources_text += f"\n--- Source: {s['video_title']} ---\n{s['material']}\n"
+
+    system = f"""{style_prompt}
+
+# YOUR TASK
+You are writing a QUOTE TWEET reply to someone else's tweet.
+
+CRITICAL RULES:
+- Your reply MUST be grounded in the SOURCE MATERIAL provided below
+- Use REAL quotes, stories, numbers, and facts from the sources — NEVER make things up
+- Every claim must be traceable to the source material
+- Connect the original tweet's idea to a specific entrepreneur story/quote
+- Keep it punchy — this is a quote tweet, not an essay
+- 3-8 lines max. Short paragraphs, strong rhythm.
+- Don't start with "This reminds me of..." or "Great point..."
+- Jump straight into the story/quote that connects
+- End with a sharp line that ties it back to the original tweet's theme
+- Write as if YOU are sharing something you know, not citing a source
+
+FACTUAL ACCURACY IS NON-NEGOTIABLE:
+- Only use quotes that appear VERBATIM in the source material
+- Only reference stories/events that are explicitly described in the sources
+- If you're not 100% sure something is in the source material, don't include it
+- Attribute quotes to the correct person
+"""
+
+    user_msg = f"""ORIGINAL TWEET:
+{tweet_text}
+
+SOURCE MATERIAL (use ONLY facts from here):
+{sources_text}
+
+{f"Additional instructions: {additional_instructions}" if additional_instructions else ""}
+
+Write a quote tweet reply. Output ONLY the finished reply, nothing else."""
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=1000,
+        system=system,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+
+    return response.content[0].text, top_matches
+
+
+def _generate_quote_reply_no_library(
+    client, tweet_text: str, style_name: str, model: str,
+    additional_instructions: str = "",
+) -> str:
+    """Fallback: generate a quote reply without library material.
+    Only extends the idea — no entrepreneur stories (to stay factual).
+    """
+    from .style_manager import build_style_prompt
+    style_prompt = build_style_prompt(style_name)
+
+    system = f"""{style_prompt}
+
+# YOUR TASK
+You are writing a QUOTE TWEET reply to someone else's tweet.
+
+IMPORTANT: You have no source material for this reply, so:
+- Do NOT reference specific entrepreneurs, quotes, or stories unless you are 100% certain they are real
+- Instead, EXTEND the idea — add your own sharp take, a framework, or a provocative angle
+- Keep it punchy — 3-8 lines max
+- Don't start with "This reminds me of..." or "Great point..."
+- Jump straight into your take
+"""
+
+    user_msg = f"""ORIGINAL TWEET:
+{tweet_text}
+
+{f"Additional instructions: {additional_instructions}" if additional_instructions else ""}
+
+Write a quote tweet reply. Output ONLY the finished reply, nothing else."""
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=1000,
+        system=system,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+
+    return response.content[0].text
+
+
 def generate_and_save(
     style_name: str,
     transcript: str,

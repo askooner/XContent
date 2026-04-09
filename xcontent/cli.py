@@ -826,6 +826,108 @@ def history(limit):
     console.print(table)
 
 
+# ── Quote Reply Command ────────────────────────────────────────────
+
+
+@cli.command("quote-reply")
+@click.argument("tweet_text")
+@click.option("--style", "-s", "style_name", default="quote-tweets", help="Style profile to use")
+@click.option("--model", "-m", default=None, help="Claude model to use")
+@click.option("--instructions", "-i", default="", help="Additional instructions")
+@click.option("--no-typefully", is_flag=True, help="Don't push to Typefully")
+@click.option("--no-save", is_flag=True, help="Don't save to file")
+def quote_reply(tweet_text, style_name, model, instructions, no_typefully, no_save):
+    """Generate a quote-tweet reply grounded in real entrepreneur stories.
+
+    \b
+    Searches your transcript library for related material, then writes
+    a factual reply connecting the tweet's idea to a real story.
+
+    \b
+    Example:
+        xcontent quote-reply "Peter Thiel on why you should work with people you like..."
+    """
+    from .content_generator import generate_quote_reply
+
+    console.print(f"\n[bold]Analyzing tweet and searching your library...[/bold]\n")
+
+    try:
+        with console.status("Searching library for related stories..."):
+            reply, sources = generate_quote_reply(
+                tweet_text=tweet_text,
+                style_name=style_name,
+                model=model,
+                additional_instructions=instructions,
+            )
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Show sources used
+    if sources:
+        console.print(f"[dim]Sources found in library:[/dim]")
+        for s in sources:
+            console.print(f"  [dim]- {s['video_title']} ({s.get('channel', '')})[/dim]")
+        console.print()
+    else:
+        console.print("[yellow]No matching transcripts in library — reply is based on extending the idea only.[/yellow]\n")
+
+    # Show the reply
+    console.print(f"[bold green]── QUOTE REPLY ──[/bold green]\n")
+    console.print(reply)
+    console.print()
+
+    # Copy to clipboard
+    try:
+        import subprocess
+        subprocess.run(["pbcopy"], input=reply.encode(), check=True)
+        console.print("[green]Copied to clipboard.[/green]")
+    except Exception:
+        pass
+
+    # Save to file
+    if not no_save:
+        from pathlib import Path as P
+        from .content_generator import _slugify
+
+        content_dir = P(__file__).resolve().parent.parent / "content"
+        content_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = _slugify(tweet_text[:40])
+        base = f"{timestamp}_qr_{slug}"
+
+        txt_path = content_dir / f"{base}.txt"
+        txt_path.write_text(reply)
+
+        import json as _json
+        meta = {
+            "style": style_name,
+            "content_type": "quote-reply",
+            "original_tweet": tweet_text[:500],
+            "sources": [s.get("video_title", "") for s in sources],
+            "generated_at": datetime.now().isoformat(),
+        }
+        meta_path = content_dir / f"{base}.meta.json"
+        meta_path.write_text(_json.dumps(meta, indent=2))
+        console.print(f"[dim]Saved to: {txt_path}[/dim]")
+
+    # Push to Typefully
+    if not no_typefully:
+        try:
+            from .typefully import create_draft
+            with console.status("Pushing to Typefully..."):
+                create_draft(reply)
+            console.print("[green]Pushed to Typefully as a draft.[/green]")
+        except RuntimeError as e:
+            if "TYPEFULLY_API_KEY not set" in str(e):
+                pass
+            else:
+                console.print(f"[yellow]Typefully: {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Typefully push failed: {e}[/yellow]")
+
+
 # ── Library Commands (Knowledge Base) ──────────────────────────────
 
 
