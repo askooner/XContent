@@ -232,16 +232,28 @@ def get_video_details(video_id: str) -> dict:
 # ── Transcript Fetching ─────────────────────────────────────────────
 
 
-def get_transcript(video_id: str, languages: list[str] | None = None) -> str:
+def get_transcript(video_id: str, languages: list[str] | None = None,
+                   video_title: str = "", channel: str = "") -> str:
     """Fetch the transcript for a YouTube video.
+
+    Auto-saves to the knowledge base so you never need to fetch it again.
 
     Args:
         video_id: YouTube video ID
         languages: Preferred languages (default: ["en"])
+        video_title: Video title (for knowledge base storage)
+        channel: Channel name (for knowledge base storage)
 
     Returns:
         Full transcript as a single string.
     """
+    # Check knowledge base first — free, no API call
+    from .knowledge_base import get_transcript_text, save_transcript
+
+    cached = get_transcript_text(video_id)
+    if cached:
+        return cached
+
     from youtube_transcript_api import YouTubeTranscriptApi
 
     if languages is None:
@@ -255,7 +267,12 @@ def get_transcript(video_id: str, languages: list[str] | None = None) -> str:
     for entry in transcript.snippets:
         lines.append(entry.text)
 
-    return " ".join(lines)
+    text = " ".join(lines)
+
+    # Auto-save to knowledge base
+    save_transcript(video_id, video_title or video_id, text, channel)
+
+    return text
 
 
 def get_transcript_with_timestamps(video_id: str, languages: list[str] | None = None) -> list[dict]:

@@ -208,7 +208,7 @@ def generate_batch(
 
     # Step 2: Generate a post for each idea
     style_prompt = build_style_prompt(style_name)
-    system_prompt = _build_system_prompt(style_prompt, content_type)
+    system_prompt = _build_system_prompt(style_prompt, content_type, style_name)
     results = []
 
     for i, idea in enumerate(ideas):
@@ -289,7 +289,7 @@ def generate(
 
     style_prompt = build_style_prompt(style_name)
 
-    system_prompt = _build_system_prompt(style_prompt, content_type)
+    system_prompt = _build_system_prompt(style_prompt, content_type, style_name)
     user_prompt = _build_user_prompt(transcript, topic, focus, additional_instructions, video_title)
 
     response = client.messages.create(
@@ -357,8 +357,37 @@ def generate_and_save(
     return content, txt_path
 
 
-def _build_system_prompt(style_prompt: str, content_type: str) -> str:
-    """Build the full system prompt combining style + content type instructions."""
+def _build_feedback_section(style_name: str, content_type: str) -> str:
+    """Build a feedback section from past generated-vs-posted pairs."""
+    try:
+        from .knowledge_base import get_recent_feedback
+        pairs = get_recent_feedback(style=style_name, content_type=content_type, limit=3)
+        if not pairs:
+            # Try without content_type filter
+            pairs = get_recent_feedback(style=style_name, limit=3)
+        if not pairs:
+            return ""
+
+        section = "\n# LEARN FROM MY EDITS\n"
+        section += "Below are examples of what you generated vs what I actually posted.\n"
+        section += "Study the differences — this is how I want you to write.\n\n"
+
+        for i, pair in enumerate(pairs, 1):
+            # Truncate to keep prompt manageable
+            gen = pair["generated_text"][:500]
+            posted = pair["posted_text"][:500]
+            section += f"## Edit Example {i}\n"
+            section += f"GENERATED:\n{gen}\n\n"
+            section += f"WHAT I ACTUALLY POSTED:\n{posted}\n\n"
+
+        section += "Apply these editing patterns to your new output.\n"
+        return section
+    except Exception:
+        return ""
+
+
+def _build_system_prompt(style_prompt: str, content_type: str, style_name: str = "") -> str:
+    """Build the full system prompt combining style + content type instructions + feedback."""
     content_type_instructions = {
         "insights": (
             "You are writing an INSIGHTS post for Twitter/X.\n"
@@ -403,7 +432,7 @@ def _build_system_prompt(style_prompt: str, content_type: str) -> str:
 
     instructions = content_type_instructions.get(content_type, content_type_instructions["insights"])
 
-    return f"""{style_prompt}
+    prompt = f"""{style_prompt}
 
 # CONTENT TYPE
 {instructions}
@@ -431,6 +460,13 @@ Rules:
   insights from the material
 - Write as if YOU are the author sharing things YOU know, not reporting on someone else
 """
+
+    # Inject feedback loop if available
+    feedback_section = _build_feedback_section(style_name, content_type)
+    if feedback_section:
+        prompt += feedback_section
+
+    return prompt
 
 
 def _build_user_prompt(

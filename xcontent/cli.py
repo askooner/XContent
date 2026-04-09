@@ -365,14 +365,17 @@ def _format_time(seconds: float) -> str:
               help="Content format")
 @click.option("--instructions", "-i", default="", help="Additional instructions")
 @click.option("--transcript-file", default=None, help="Path to a transcript file (instead of --video)")
+@click.option("--from-library", "-l", "library_query", default=None,
+              help="Search your transcript library instead of fetching from YouTube")
 @click.option("--model", "-m", default=None, help="Claude model to use")
 @click.option("--no-save", is_flag=True, help="Don't save the output to a file")
 @click.option("--no-typefully", is_flag=True, help="Don't push to Typefully (local save only)")
-def write(style_name, video_id, topic, focus, content_type, instructions, transcript_file, model, no_save, no_typefully):
+def write(style_name, video_id, topic, focus, content_type, instructions, transcript_file, library_query, model, no_save, no_typefully):
     """Generate content in your style from a source transcript.
 
     If no --video is given but --topic is, it will search your channels
     and let you pick a video. You can also pass a full YouTube URL as --video.
+    Use --from-library to search your stored transcripts (free, no API calls).
     """
     import re
 
@@ -386,7 +389,31 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
             video_id = m.group(1)
 
     # Get transcript
-    if transcript_file:
+    if library_query:
+        # Search local library — free, no API calls
+        from .knowledge_base import search_transcripts, get_transcript_text as kb_get
+        results = search_transcripts(library_query)
+        if not results:
+            console.print(f"[yellow]No matches for '{library_query}' in your library.[/yellow]")
+            return
+
+        console.print(f"\n[bold]Found {len(results)} matches in your library:[/bold]\n")
+        for i, r in enumerate(results, 1):
+            console.print(f"  [cyan]{i}[/cyan]. {r['video_title']} — [dim]{r['channel']}[/dim]")
+
+        console.print()
+        choice = click.prompt("Pick a video", type=int, default=1)
+        if choice < 1 or choice > len(results):
+            console.print("[red]Invalid choice.[/red]")
+            return
+
+        picked = results[choice - 1]
+        video_id = picked["video_id"]
+        video_title = picked["video_title"]
+        transcript_text = kb_get(video_id)
+        console.print(f"\n[green]Source (from library):[/green] {video_title}")
+        console.print(f"[dim]Transcript: {len(transcript_text)} characters — no API call needed[/dim]\n")
+    elif transcript_file:
         with open(transcript_file) as f:
             transcript_text = f.read()
         video_title = transcript_file
@@ -395,7 +422,8 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
             with console.status("Fetching video info and transcript..."):
                 details = get_video_details(video_id)
                 video_title = details["title"]
-                transcript_text = get_transcript(video_id)
+                transcript_text = get_transcript(video_id, video_title=video_title,
+                                                 channel=details.get("channel", ""))
             console.print(f"[green]Source:[/green] {video_title}")
             console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]")
             if len(transcript_text) > 15_000:
@@ -435,7 +463,8 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
         try:
             with console.status("Fetching transcript..."):
                 video_title = picked["title"]
-                transcript_text = get_transcript(video_id)
+                transcript_text = get_transcript(video_id, video_title=video_title,
+                                                 channel=picked.get("channel", ""))
             console.print(f"\n[green]Source:[/green] {video_title}")
             console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]")
             if len(transcript_text) > 15_000:
@@ -525,14 +554,17 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
               help="Content format for all posts")
 @click.option("--num", "-n", "num_posts", default=0, help="Number of posts (0 = auto-detect based on content)")
 @click.option("--transcript-file", default=None, help="Path to a transcript file")
+@click.option("--from-library", "-l", "library_query", default=None,
+              help="Search your transcript library instead of fetching from YouTube")
 @click.option("--model", "-m", default=None, help="Claude model to use")
 @click.option("--instructions", "-i", default="", help="Additional instructions for all posts")
 @click.option("--no-typefully", is_flag=True, help="Don't push to Typefully (local save only)")
-def batch(style_name, video_id, topic, content_type, num_posts, transcript_file, model, instructions, no_typefully):
+def batch(style_name, video_id, topic, content_type, num_posts, transcript_file, library_query, model, instructions, no_typefully):
     """Generate multiple posts from a single video.
 
     Extracts 4-5+ distinct ideas from one transcript and writes a separate
     post for each. One video = a week of content.
+    Use --from-library to reuse a stored transcript (free, no API calls).
     """
     import re
 
@@ -546,7 +578,30 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
             video_id = m.group(1)
 
     # Get transcript
-    if transcript_file:
+    if library_query:
+        from .knowledge_base import search_transcripts, get_transcript_text as kb_get
+        results = search_transcripts(library_query)
+        if not results:
+            console.print(f"[yellow]No matches for '{library_query}' in your library.[/yellow]")
+            return
+
+        console.print(f"\n[bold]Found {len(results)} matches in your library:[/bold]\n")
+        for i, r in enumerate(results, 1):
+            console.print(f"  [cyan]{i}[/cyan]. {r['video_title']} — [dim]{r['channel']}[/dim]")
+
+        console.print()
+        choice = click.prompt("Pick a video", type=int, default=1)
+        if choice < 1 or choice > len(results):
+            console.print("[red]Invalid choice.[/red]")
+            return
+
+        picked = results[choice - 1]
+        video_id = picked["video_id"]
+        video_title = picked["video_title"]
+        transcript_text = kb_get(video_id)
+        console.print(f"\n[green]Source (from library):[/green] {video_title}")
+        console.print(f"[dim]Transcript: {len(transcript_text)} characters — no API call needed[/dim]\n")
+    elif transcript_file:
         with open(transcript_file) as f:
             transcript_text = f.read()
         video_title = transcript_file
@@ -555,7 +610,8 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
             with console.status("Fetching video info and transcript..."):
                 details = get_video_details(video_id)
                 video_title = details["title"]
-                transcript_text = get_transcript(video_id)
+                transcript_text = get_transcript(video_id, video_title=video_title,
+                                                 channel=details.get("channel", ""))
             console.print(f"[green]Source:[/green] {video_title}")
             console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]\n")
         except Exception as e:
@@ -589,7 +645,8 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
         try:
             with console.status("Fetching transcript..."):
                 video_title = picked["title"]
-                transcript_text = get_transcript(video_id)
+                transcript_text = get_transcript(video_id, video_title=video_title,
+                                                 channel=picked.get("channel", ""))
             console.print(f"\n[green]Source:[/green] {video_title}")
             console.print(f"[dim]Transcript: {len(transcript_text)} characters[/dim]\n")
         except Exception as e:
@@ -614,6 +671,11 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
             from .content_generator import extract_ideas
             ideas = extract_ideas(transcript_text, video_title, num_ideas=num_posts)
 
+        # Save ideas to knowledge base
+        if video_id:
+            from .knowledge_base import save_ideas
+            save_ideas(video_id, ideas)
+
         console.print(f"[green]Found {len(ideas)} ideas:[/green]\n")
         for i, idea in enumerate(ideas, 1):
             console.print(f"  [cyan]{i}[/cyan]. {idea.get('title', 'Untitled')}")
@@ -633,7 +695,7 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
                 client = _get_anthropic_client()
                 write_model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
-                system_prompt = _build_system_prompt(style_prompt, content_type)
+                system_prompt = _build_system_prompt(style_prompt, content_type, style_name)
                 key_material = idea.get("key_material", idea.get("key_quotes", ""))
                 user_prompt = _build_user_prompt(
                     transcript=key_material,
@@ -762,6 +824,124 @@ def history(limit):
         )
 
     console.print(table)
+
+
+# ── Library Commands (Knowledge Base) ──────────────────────────────
+
+
+@cli.group()
+def library():
+    """Your transcript library — search past videos without re-fetching."""
+    pass
+
+
+@library.command("list")
+@click.option("--limit", "-n", default=30, help="Number of transcripts to show")
+def library_list(limit):
+    """List all stored transcripts."""
+    from .knowledge_base import list_transcripts
+
+    transcripts = list_transcripts(limit)
+    if not transcripts:
+        console.print("[yellow]No transcripts stored yet. They auto-save when you use --video.[/yellow]")
+        return
+
+    table = Table(title=f"Transcript Library ({len(transcripts)} stored)")
+    table.add_column("Video ID", style="dim", width=12)
+    table.add_column("Title", style="cyan", max_width=50)
+    table.add_column("Channel")
+    table.add_column("Length", justify="right")
+    table.add_column("Fetched", style="dim")
+
+    for t in transcripts:
+        length = f"{t['char_count']:,} chars"
+        table.add_row(t["video_id"], t["video_title"][:50], t["channel"], length, t["fetched_at"][:10])
+
+    console.print(table)
+
+
+@library.command("search")
+@click.argument("query")
+@click.option("--limit", "-n", default=10, help="Max results")
+def library_search(query, limit):
+    """Search across all stored transcripts (free, no API tokens)."""
+    from .knowledge_base import search_transcripts
+
+    results = search_transcripts(query, limit)
+    if not results:
+        console.print(f"[yellow]No matches for '{query}' in your library.[/yellow]")
+        return
+
+    console.print(f"\n[bold]Found {len(results)} matches for '{query}':[/bold]\n")
+    for i, r in enumerate(results, 1):
+        console.print(f"  [cyan]{i}[/cyan]. [bold]{r['video_title']}[/bold] — {r['channel']}")
+        console.print(f"     [dim]{r['video_id']} | {r['char_count']:,} chars | fetched {r['fetched_at'][:10]}[/dim]")
+        if r.get("excerpt"):
+            console.print(f"     {r['excerpt']}")
+        console.print()
+
+
+@library.command("ideas")
+@click.option("--video", "-v", "video_id", default=None, help="Filter by video ID")
+@click.option("--limit", "-n", default=30, help="Max results")
+def library_ideas(video_id, limit):
+    """Show unused ideas from past extractions."""
+    from .knowledge_base import get_unused_ideas
+
+    ideas = get_unused_ideas(video_id, limit)
+    if not ideas:
+        console.print("[yellow]No unused ideas. Run a batch to extract some.[/yellow]")
+        return
+
+    table = Table(title=f"Unused Ideas ({len(ideas)})")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Idea", style="cyan", max_width=50)
+    table.add_column("Video", max_width=30)
+    table.add_column("Angle", max_width=40, style="dim")
+
+    for idea in ideas:
+        table.add_row(str(idea["id"]), idea["title"], idea.get("video_title", "")[:30], idea["angle"][:40])
+
+    console.print(table)
+
+
+# ── Feedback Command ──────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("generated_file")
+@click.argument("posted_text_or_file")
+@click.option("--style", "-s", "style_name", required=True, help="Style this was for")
+@click.option("--type", "-T", "content_type", default="insights",
+              type=click.Choice(["insights", "essays", "transcripts", "quote-tweets"]))
+def feedback(generated_file, posted_text_or_file, style_name, content_type):
+    """Teach the system by showing what you actually posted vs what it generated.
+
+    \b
+    GENERATED_FILE: path to the .txt file that was generated
+    POSTED_TEXT_OR_FILE: either a file path or the actual posted text in quotes
+    """
+    from pathlib import Path as P
+
+    from .knowledge_base import save_feedback
+
+    # Read generated
+    gen_path = P(generated_file)
+    if not gen_path.exists():
+        console.print(f"[red]File not found: {generated_file}[/red]")
+        return
+    generated_text = gen_path.read_text()
+
+    # Read posted — could be a file or raw text
+    posted_path = P(posted_text_or_file)
+    if posted_path.exists():
+        posted_text = posted_path.read_text()
+    else:
+        posted_text = posted_text_or_file
+
+    save_feedback(style_name, content_type, generated_text, posted_text)
+    console.print(f"[green]Feedback saved. The system will learn from your edits.[/green]")
+    console.print(f"[dim]You now have more training data for '{style_name}' / {content_type}.[/dim]")
 
 
 def main():
