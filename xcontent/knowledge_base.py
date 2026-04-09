@@ -178,6 +178,17 @@ def save_ideas(video_id: str, ideas: list[dict]) -> None:
     db.close()
 
 
+def get_ideas_for_video(video_id: str) -> list[dict]:
+    """Get all ideas previously extracted for a video."""
+    db = _get_db()
+    rows = db.execute(
+        """SELECT * FROM ideas WHERE video_id = ? ORDER BY id""",
+        (video_id,),
+    ).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
+
+
 def get_unused_ideas(video_id: str | None = None, limit: int = 50) -> list[dict]:
     """Get ideas that haven't been used yet."""
     db = _get_db()

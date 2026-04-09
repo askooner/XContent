@@ -559,12 +559,14 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
 @click.option("--model", "-m", default=None, help="Claude model to use")
 @click.option("--instructions", "-i", default="", help="Additional instructions for all posts")
 @click.option("--no-typefully", is_flag=True, help="Don't push to Typefully (local save only)")
-def batch(style_name, video_id, topic, content_type, num_posts, transcript_file, library_query, model, instructions, no_typefully):
+@click.option("--fresh", is_flag=True, help="Force fresh idea extraction (ignore cached ideas)")
+def batch(style_name, video_id, topic, content_type, num_posts, transcript_file, library_query, model, instructions, no_typefully, fresh):
     """Generate multiple posts from a single video.
 
     Extracts 4-5+ distinct ideas from one transcript and writes a separate
     post for each. One video = a week of content.
     Use --from-library to reuse a stored transcript (free, no API calls).
+    Use --fresh to force new idea extraction even if ideas already exist.
     """
     import re
 
@@ -660,13 +662,25 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
         console.print("[red]No transcript provided.[/red]")
         return
 
-    # Generate batch
-    if num_posts > 0:
-        console.print(f"[bold]Extracting {num_posts} post ideas and generating content...[/bold]\n")
-    else:
-        console.print(f"[bold]Mining transcript for all post-worthy ideas...[/bold]\n")
+    # Generate batch — check library for existing ideas first
+    ideas = None
+    if video_id and not fresh:
+        from .knowledge_base import get_ideas_for_video, save_ideas
+        existing = get_ideas_for_video(video_id)
+        if existing:
+            console.print(f"[green]Found {len(existing)} ideas already extracted for this video (no tokens used).[/green]\n")
+            # Convert DB rows back to the format extract_ideas returns
+            ideas = [
+                {"title": e["title"], "angle": e["angle"], "key_material": e["key_material"]}
+                for e in existing
+            ]
 
-    try:
+    if ideas is None:
+        if num_posts > 0:
+            console.print(f"[bold]Extracting {num_posts} post ideas and generating content...[/bold]\n")
+        else:
+            console.print(f"[bold]Mining transcript for all post-worthy ideas...[/bold]\n")
+
         with console.status("Step 1: Mining transcript for post ideas..."):
             from .content_generator import extract_ideas
             ideas = extract_ideas(transcript_text, video_title, num_ideas=num_posts)
@@ -675,6 +689,8 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
         if video_id:
             from .knowledge_base import save_ideas
             save_ideas(video_id, ideas)
+
+    try:
 
         console.print(f"[green]Found {len(ideas)} ideas:[/green]\n")
         for i, idea in enumerate(ideas, 1):
