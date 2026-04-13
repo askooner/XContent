@@ -255,6 +255,22 @@ def generate_batch(
         meta_path = CONTENT_DIR / f"{base}.meta.json"
         meta_path.write_text(json.dumps(meta, indent=2))
 
+        # Persist to the knowledge base so it's retrievable + searchable later
+        try:
+            from .knowledge_base import save_post
+            save_post(
+                style=style_name,
+                content=content,
+                content_type=content_type,
+                topic=title,
+                focus=angle,
+                video_id=video_id,
+                video_title=video_title,
+                command="batch",
+            )
+        except Exception:
+            pass
+
         results.append((content, txt_path))
 
     return results
@@ -439,6 +455,159 @@ Write a quote tweet reply. Output ONLY the finished reply, nothing else."""
     return response.content[0].text, top_matches
 
 
+def generate_story(
+    topic: str,
+    style_name: str,
+    model: str | None = None,
+    additional_instructions: str = "",
+    max_sources: int = 5,
+) -> tuple[str, list[dict]]:
+    """Cross-library narrative synthesis.
+
+    Mines the ENTIRE transcript library for anything related to the topic,
+    extracts the real facts/quotes/stories from each matching source, and
+    weaves them into one original narrative post (Steve Jobs/Japan style).
+
+    Every claim must be grounded in the source material — no inventions.
+
+    Returns:
+        (generated_post, list of source transcripts used)
+    """
+    from .knowledge_base import search_transcripts, get_transcript_text
+    from .style_manager import build_style_prompt
+
+    client = _get_anthropic_client()
+    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+    # Step 1: broaden the topic into a handful of search terms the FTS index
+    # can actually hit — entity names, related concepts, synonyms.
+    keyword_response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=300,
+        system=(
+            "You are a research assistant. Given a topic, produce 4-7 search "
+            "terms that would find related material in a library of transcripts "
+            "from entrepreneur/business podcasts. Include specific names, "
+            "companies, related concepts, and synonyms. One term per line. "
+            "No commentary."
+        ),
+        messages=[{"role": "user", "content": topic}],
+    )
+    keywords = [k.strip() for k in keyword_response.content[0].text.split("\n") if k.strip()]
+    if topic not in keywords:
+        keywords.insert(0, topic)
+
+    # Step 2: FTS the library, dedupe by video.
+    all_matches: list[dict] = []
+    seen_videos: set[str] = set()
+    for keyword in keywords:
+        try:
+            matches = search_transcripts(keyword, limit=5)
+        except Exception:
+            continue
+        for m in matches:
+            if m["video_id"] not in seen_videos:
+                seen_videos.add(m["video_id"])
+                all_matches.append(m)
+
+    if not all_matches:
+        raise ValueError(
+            f"No library material found for topic: '{topic}'. "
+            f"Add transcripts first with 'xcontent write --video ...' or "
+            f"'xcontent batch --video ...'."
+        )
+
+    # Step 3: pull the most relevant bits from the top N matches.
+    top_matches = all_matches[:max_sources]
+    source_material: list[dict] = []
+    for match in top_matches:
+        full_text = get_transcript_text(match["video_id"])
+        if not full_text:
+            continue
+
+        extract = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1800,
+            system=(
+                "Extract ONLY the parts of this transcript that relate to the "
+                "topic below. Pull out specific quotes, stories, numbers, dates, "
+                "people, and facts. Keep quotes VERBATIM. If nothing relevant, "
+                "output NOTHING_RELEVANT.\n\n"
+                f"TOPIC: {topic}"
+            ),
+            messages=[{"role": "user", "content": full_text[:70000]}],
+        )
+        extracted = extract.content[0].text.strip()
+        if extracted and "NOTHING_RELEVANT" not in extracted:
+            source_material.append({
+                "video_title": match["video_title"],
+                "channel": match.get("channel", ""),
+                "material": extracted,
+            })
+
+    if not source_material:
+        raise ValueError(
+            f"Found matching transcripts but no relevant material for '{topic}'. "
+            f"Try a more specific topic or add more transcripts."
+        )
+
+    # Step 4: weave the extracted material into a narrative post.
+    style_prompt = build_style_prompt(style_name)
+
+    sources_text = ""
+    for s in source_material:
+        sources_text += f"\n--- Source: {s['video_title']} ({s['channel']}) ---\n{s['material']}\n"
+
+    system = f"""{style_prompt}
+
+# YOUR TASK
+You are synthesizing an ORIGINAL narrative post from multiple real sources.
+
+This is NOT a summary. This is storytelling. Weave the facts, quotes, and
+moments from the source material into one cohesive story that feels like
+it came from someone who knows the subject deeply.
+
+STRUCTURE:
+- Open with a specific, surprising hook — a scene, a line, a number.
+  Never open with "In [year]..." or "Many people know..."
+- Build the story in short punchy paragraphs
+- Use the real quotes, names, numbers, dates from the source material
+- Every beat should earn its place — no filler, no connective tissue that
+  adds nothing
+- End with a sharp final line that lands the meaning
+
+FACTUAL ACCURACY IS NON-NEGOTIABLE:
+- Every quote must appear VERBATIM in the source material
+- Every name, number, date, and event must be traceable to a source
+- Never invent dialogue, never embellish details
+- If two sources disagree, use the one you're more certain of and drop the other
+- If you can't make the story work with only the real material, make it shorter
+  rather than inventing anything
+
+VOICE:
+- Write as if YOU know this. Don't cite sources, don't say "according to".
+- The reader should feel like an insider is telling them a story they hadn't heard.
+"""
+
+    user_msg = f"""TOPIC: {topic}
+
+SOURCE MATERIAL (use ONLY facts from here):
+{sources_text}
+
+{f"Additional instructions: {additional_instructions}" if additional_instructions else ""}
+
+Write the narrative post. Output ONLY the finished post, nothing else."""
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=2000,
+        system=system,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+
+    return response.content[0].text, top_matches
+
+
 def _generate_quote_reply_no_library(
     client, tweet_text: str, style_name: str, model: str,
     additional_instructions: str = "",
@@ -529,6 +698,22 @@ def generate_and_save(
     }
     meta_path = CONTENT_DIR / f"{base}.meta.json"
     meta_path.write_text(json.dumps(meta, indent=2))
+
+    # Persist to the knowledge base so it's retrievable + searchable later
+    try:
+        from .knowledge_base import save_post
+        save_post(
+            style=style_name,
+            content=content,
+            content_type=content_type,
+            topic=topic,
+            focus=focus,
+            video_id=video_id,
+            video_title=video_title,
+            command="write",
+        )
+    except Exception:
+        pass
 
     return content, txt_path
 

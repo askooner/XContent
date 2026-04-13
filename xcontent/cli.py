@@ -928,12 +928,141 @@ def quote_reply(tweet_text, style_name, model, instructions, no_typefully, no_sa
         meta_path.write_text(_json.dumps(meta, indent=2))
         console.print(f"[dim]Saved to: {txt_path}[/dim]")
 
+        # Persist to the knowledge base
+        try:
+            from .knowledge_base import save_post
+            save_post(
+                style=style_name,
+                content=reply,
+                content_type="quote-reply",
+                topic=tweet_text[:120],
+                source_videos=" | ".join(s.get("video_title", "") for s in sources),
+                command="quote-reply",
+            )
+        except Exception:
+            pass
+
     # Push to Typefully
     if not no_typefully:
         try:
             from .typefully import create_draft
             with console.status("Pushing to Typefully..."):
                 create_draft(reply)
+            console.print("[green]Pushed to Typefully as a draft.[/green]")
+        except RuntimeError as e:
+            if "TYPEFULLY_API_KEY not set" in str(e):
+                pass
+            else:
+                console.print(f"[yellow]Typefully: {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Typefully push failed: {e}[/yellow]")
+
+
+# ── Story Command (Cross-Library Narrative Synthesis) ────────────────
+
+
+@cli.command()
+@click.argument("topic")
+@click.option("--style", "-s", "style_name", default="insights", help="Style profile to use")
+@click.option("--model", "-m", default=None, help="Claude model to use")
+@click.option("--instructions", "-i", default="", help="Additional instructions")
+@click.option("--max-sources", default=5, help="Max transcripts to weave from")
+@click.option("--no-typefully", is_flag=True, help="Don't push to Typefully")
+@click.option("--no-save", is_flag=True, help="Don't save to file")
+def story(topic, style_name, model, instructions, max_sources, no_typefully, no_save):
+    """Synthesize an original narrative post from your entire library.
+
+    \b
+    Mines every transcript in your library for material related to TOPIC,
+    then weaves the real facts, quotes and moments into one narrative post.
+    Every claim is grounded in a real source — no inventions.
+
+    \b
+    Example:
+        xcontent story "Steve Jobs pilgrimage to Japan"
+        xcontent story "Rockefeller's obsession with cost accounting"
+    """
+    from .content_generator import generate_story
+
+    console.print(f"\n[bold]Mining your library for: [cyan]{topic}[/cyan][/bold]\n")
+
+    try:
+        with console.status("Searching library, extracting material, weaving story..."):
+            post, sources = generate_story(
+                topic=topic,
+                style_name=style_name,
+                model=model,
+                additional_instructions=instructions,
+                max_sources=max_sources,
+            )
+    except ValueError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        return
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    if sources:
+        console.print(f"[dim]Wove material from {len(sources)} source(s):[/dim]")
+        for s in sources:
+            console.print(f"  [dim]- {s['video_title']} ({s.get('channel', '')})[/dim]")
+        console.print()
+
+    console.print(f"[bold green]── STORY ──[/bold green]\n")
+    console.print(post)
+    console.print()
+
+    try:
+        import subprocess
+        subprocess.run(["pbcopy"], input=post.encode(), check=True)
+        console.print("[green]Copied to clipboard.[/green]")
+    except Exception:
+        pass
+
+    if not no_save:
+        from pathlib import Path as P
+        from .content_generator import _slugify
+
+        content_dir = P(__file__).resolve().parent.parent / "content"
+        content_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = _slugify(topic)
+        base = f"{timestamp}_story_{slug}"
+
+        txt_path = content_dir / f"{base}.txt"
+        txt_path.write_text(post)
+
+        import json as _json
+        meta = {
+            "style": style_name,
+            "content_type": "story",
+            "topic": topic,
+            "sources": [s.get("video_title", "") for s in sources],
+            "generated_at": datetime.now().isoformat(),
+        }
+        meta_path = content_dir / f"{base}.meta.json"
+        meta_path.write_text(_json.dumps(meta, indent=2))
+        console.print(f"[dim]Saved to: {txt_path}[/dim]")
+
+        try:
+            from .knowledge_base import save_post
+            save_post(
+                style=style_name,
+                content=post,
+                content_type="story",
+                topic=topic,
+                source_videos=" | ".join(s.get("video_title", "") for s in sources),
+                command="story",
+            )
+        except Exception:
+            pass
+
+    if not no_typefully:
+        try:
+            from .typefully import create_draft
+            with console.status("Pushing to Typefully..."):
+                create_draft(post)
             console.print("[green]Pushed to Typefully as a draft.[/green]")
         except RuntimeError as e:
             if "TYPEFULLY_API_KEY not set" in str(e):
@@ -1021,6 +1150,78 @@ def library_ideas(video_id, limit):
         table.add_row(str(idea["id"]), idea["title"], idea.get("video_title", "")[:30], idea["angle"][:40])
 
     console.print(table)
+
+
+@library.command("posts")
+@click.option("--limit", "-n", default=30, help="Number of posts to show")
+@click.option("--style", "-s", "style_name", default="", help="Filter by style")
+@click.option("--search", "search_query", default="", help="Full-text search posts")
+def library_posts(limit, style_name, search_query):
+    """List or search the posts you've generated."""
+    from .knowledge_base import list_posts, search_posts, count_posts
+
+    total = count_posts()
+    if total == 0:
+        console.print("[yellow]No posts saved yet. Generate some with 'write', 'batch', 'story', or 'quote-reply'.[/yellow]")
+        return
+
+    if search_query:
+        rows = search_posts(search_query, limit=limit)
+        if not rows:
+            console.print(f"[yellow]No posts match '{search_query}'.[/yellow]")
+            return
+        console.print(f"\n[bold]{len(rows)} posts matching '{search_query}':[/bold]\n")
+        for r in rows:
+            console.print(f"  [cyan]#{r['id']}[/cyan] [bold]{r['topic'] or '(no topic)'}[/bold] "
+                          f"[dim]{r['style']}/{r['content_type']} — {r['created_at'][:10]}[/dim]")
+            if r.get("excerpt"):
+                console.print(f"     {r['excerpt']}")
+            console.print()
+        return
+
+    rows = list_posts(limit=limit, style=style_name)
+    console.print(f"\n[bold]Recent posts ({len(rows)} of {total}):[/bold]\n")
+    table = Table()
+    table.add_column("#", style="cyan", width=5)
+    table.add_column("When", style="dim", width=10)
+    table.add_column("Style", width=12)
+    table.add_column("Cmd", width=11)
+    table.add_column("Topic", max_width=35)
+    table.add_column("Preview", style="dim", max_width=50)
+    for r in rows:
+        table.add_row(
+            str(r["id"]),
+            r["created_at"][:10],
+            r["style"],
+            r.get("command", "") or "",
+            (r["topic"] or r.get("video_title", ""))[:35],
+            (r.get("preview") or "").replace("\n", " ")[:50],
+        )
+    console.print(table)
+
+
+@library.command("post")
+@click.argument("post_id", type=int)
+def library_post(post_id):
+    """Show a single saved post by id."""
+    from .knowledge_base import get_post
+
+    row = get_post(post_id)
+    if not row:
+        console.print(f"[red]No post with id {post_id}.[/red]")
+        return
+
+    console.print(f"\n[bold]Post #{row['id']}[/bold]")
+    console.print(f"[dim]{row['style']}/{row['content_type']} — {row['created_at']}[/dim]")
+    if row.get("topic"):
+        console.print(f"[dim]Topic: {row['topic']}[/dim]")
+    if row.get("video_title"):
+        console.print(f"[dim]Source: {row['video_title']}[/dim]")
+    if row.get("source_videos"):
+        console.print(f"[dim]Sources: {row['source_videos']}[/dim]")
+    console.print()
+    console.print(row["content"])
+    console.print()
 
 
 # ── Feedback Command ──────────────────────────────────────────────────

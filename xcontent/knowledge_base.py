@@ -91,6 +91,48 @@ def _get_db() -> sqlite3.Connection:
         )
     """)
 
+    # Posts: every piece of content the system generates gets stored here.
+    # Used for retrieval, inspiration, and training signals.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            style TEXT NOT NULL,
+            content_type TEXT DEFAULT '',
+            topic TEXT DEFAULT '',
+            focus TEXT DEFAULT '',
+            video_id TEXT DEFAULT '',
+            video_title TEXT DEFAULT '',
+            content TEXT NOT NULL,
+            source_videos TEXT DEFAULT '',
+            command TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    # Full-text search over the posts table so we can retrieve past posts
+    # by topic ("what have I written about Bezos?") cheaply.
+    db.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts
+        USING fts5(topic, video_title, content, content=posts, content_rowid=rowid)
+    """)
+
+    db.executescript("""
+        CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
+            INSERT INTO posts_fts(rowid, topic, video_title, content)
+            VALUES (new.rowid, new.topic, new.video_title, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS posts_ad AFTER DELETE ON posts BEGIN
+            INSERT INTO posts_fts(posts_fts, rowid, topic, video_title, content)
+            VALUES ('delete', old.rowid, old.topic, old.video_title, old.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
+            INSERT INTO posts_fts(posts_fts, rowid, topic, video_title, content)
+            VALUES ('delete', old.rowid, old.topic, old.video_title, old.content);
+            INSERT INTO posts_fts(rowid, topic, video_title, content)
+            VALUES (new.rowid, new.topic, new.video_title, new.content);
+        END;
+    """)
+
     db.commit()
     return db
 
@@ -234,6 +276,88 @@ def save_feedback(style: str, content_type: str, generated_text: str, posted_tex
     )
     db.commit()
     db.close()
+
+
+# ── Posts Storage ────────────────────────────────────────────────────
+
+
+def save_post(
+    style: str,
+    content: str,
+    content_type: str = "",
+    topic: str = "",
+    focus: str = "",
+    video_id: str = "",
+    video_title: str = "",
+    source_videos: str = "",
+    command: str = "",
+) -> int:
+    """Save a generated post to the knowledge base. Returns the post id."""
+    db = _get_db()
+    cur = db.execute(
+        """INSERT INTO posts (style, content_type, topic, focus, video_id, video_title,
+                              content, source_videos, command, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (style, content_type, topic, focus, video_id, video_title,
+         content, source_videos, command, datetime.now().isoformat()),
+    )
+    db.commit()
+    post_id = cur.lastrowid
+    db.close()
+    return post_id
+
+
+def list_posts(limit: int = 30, style: str = "") -> list[dict]:
+    """List recent generated posts."""
+    db = _get_db()
+    if style:
+        rows = db.execute(
+            """SELECT id, style, content_type, topic, video_title, command, created_at,
+                      substr(content, 1, 120) AS preview
+               FROM posts WHERE style = ? ORDER BY created_at DESC LIMIT ?""",
+            (style, limit),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            """SELECT id, style, content_type, topic, video_title, command, created_at,
+                      substr(content, 1, 120) AS preview
+               FROM posts ORDER BY created_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
+
+
+def get_post(post_id: int) -> dict | None:
+    """Get a single post by id."""
+    db = _get_db()
+    row = db.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
+    db.close()
+    return dict(row) if row else None
+
+
+def search_posts(query: str, limit: int = 10) -> list[dict]:
+    """Full-text search over generated posts."""
+    db = _get_db()
+    rows = db.execute(
+        """SELECT p.id, p.style, p.content_type, p.topic, p.video_title, p.created_at,
+                  snippet(posts_fts, 2, '>>>', '<<<', '...', 30) AS excerpt
+           FROM posts_fts
+           JOIN posts p ON p.rowid = posts_fts.rowid
+           WHERE posts_fts MATCH ?
+           ORDER BY rank
+           LIMIT ?""",
+        (query, limit),
+    ).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
+
+
+def count_posts() -> int:
+    db = _get_db()
+    row = db.execute("SELECT COUNT(*) AS n FROM posts").fetchone()
+    db.close()
+    return row["n"] if row else 0
 
 
 def get_recent_feedback(style: str = "", content_type: str = "", limit: int = 5) -> list[dict]:
