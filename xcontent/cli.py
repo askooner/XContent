@@ -552,7 +552,7 @@ def write(style_name, video_id, topic, focus, content_type, instructions, transc
 @click.option("--type", "-T", "content_type", default="insights",
               type=click.Choice(["insights", "essays", "transcripts", "quote-tweets"]),
               help="Content format for all posts")
-@click.option("--num", "-n", "num_posts", default=0, help="Number of posts (0 = auto-detect based on content)")
+@click.option("--num", "-n", "num_posts", default=0, help="Number of posts (0 = auto, defaults to 3 best ideas)")
 @click.option("--transcript-file", default=None, help="Path to a transcript file")
 @click.option("--from-library", "-l", "library_query", default=None,
               help="Search your transcript library instead of fetching from YouTube")

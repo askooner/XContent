@@ -79,36 +79,30 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
     if len(extract_transcript) > 80_000:
         extract_transcript = extract_transcript[:80_000]
 
-    # Smart default based on transcript length
+    # Default to 3 — quality over quantity. Caller can override.
     if num_ideas <= 0:
-        char_count = len(extract_transcript)
-        if char_count < 15_000:
-            num_ideas = 3
-        elif char_count < 40_000:
-            num_ideas = 5
-        elif char_count < 70_000:
-            num_ideas = 7
-        else:
-            num_ideas = 10
+        num_ideas = 3
 
-    count_instruction = f"Extract exactly {num_ideas} distinct post ideas."
+    count_instruction = f"Find exactly {num_ideas} ideas."
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=6000,
         system=(
-            "You extract post ideas from transcripts. Output ONLY a valid JSON array.\n\n"
+            "You find the best post ideas in a transcript. Output ONLY a valid JSON array.\n\n"
             "Each object must have exactly these 3 keys:\n"
-            '- "title": short post title (specific, not generic)\n'
-            '- "angle": the hook / why it\'s interesting (1 sentence)\n'
+            '- "title": short specific post title (not generic)\n'
+            '- "angle": the hook — the ONE thing that makes this surprising or worth reading (1 sentence)\n'
             '- "key_material": the actual quotes and facts to build the post from '
-            "(include DIRECT QUOTES from the transcript, specific numbers, names, stories)\n\n"
-            "Rules:\n"
-            "- Each idea must be a DIFFERENT topic/story — not variations of the same thing\n"
-            "- Include actual quotes from the transcript in key_material\n"
-            "- Focus on stories, contrarian takes, surprising facts, frameworks\n"
-            "- Skip generic insights like 'work hard' or 'be passionate' — only the stuff\n"
-            "  that would make someone stop scrolling\n"
+            "(VERBATIM quotes from the transcript, specific numbers, names, dates, stories)\n\n"
+            "THE STANDARD IS HIGH:\n"
+            "- Each idea must have a real TENSION or SURPRISE — conventional wisdom vs what actually happened,\n"
+            "  or a counterintuitive decision, or a specific moment that changed everything\n"
+            "- Each idea must be grounded in a SPECIFIC STORY or QUOTE, not a general observation\n"
+            "- Include verbatim quotes with the exact words from the transcript\n"
+            "- Skip anything generic — 'work hard', 'focus matters', 'be resilient'. Those are not ideas.\n"
+            "- If the transcript doesn't have enough good material for all 3, return fewer — better to\n"
+            "  return 1 great idea than 3 mediocre ones\n"
             "- Output ONLY the JSON array. No text before or after it. No markdown."
         ),
         messages=[{"role": "user", "content": (
@@ -752,15 +746,21 @@ def _build_system_prompt(style_prompt: str, content_type: str, style_name: str =
     content_type_instructions = {
         "insights": (
             "You are writing an INSIGHTS post for Twitter/X.\n"
-            "- Pull a specific story, framework, or decision from the source material\n"
-            "- Mix direct quotes with your own sharp commentary\n"
-            "- Use lots of line breaks — short paragraphs, punchy rhythm\n"
-            "- End with a strong takeaway or provocative closing line\n"
-            "- VARY your openings — do NOT always start with '[Person] on [topic]'\n"
-            "  Instead, try: a bold claim, a surprising stat, a question, a story hook,\n"
-            "  a contrarian take, or drop straight into a quote\n"
-            "- The hook (first 1-2 lines) must stop someone mid-scroll\n"
-            "- Keep it concise but complete"
+            "STRUCTURE: Build tension around ONE specific story or decision.\n"
+            "  1. Hook — a bold claim, a counterintuitive fact, or a scene. 1-2 lines max.\n"
+            "  2. Setup — the context, the conventional approach.\n"
+            "  3. Turn — what they actually did, and why it's the opposite of expected.\n"
+            "  4. The math / the evidence — concrete numbers, quotes, comparisons.\n"
+            "  5. Closing line — the universal principle, distilled to one sentence.\n"
+            "VOICE:\n"
+            "- Short paragraphs, often single sentences. Lots of line breaks.\n"
+            "- Embed real quotes mid-post as proof, not decoration.\n"
+            "- Write like you know this cold — confident, no hedging.\n"
+            "- No filler transitions. Every line moves the argument forward.\n"
+            "OPENINGS — NEVER start with '[Person] on [topic]:'\n"
+            "  Instead: a bold claim ('Nvidia could easily become a hyperscaler.'),\n"
+            "  a surprising fact, a specific scene, or drop straight into the tension.\n"
+            "ENDING: A single distilled line — the principle that makes someone screenshot it."
         ),
         "essays": (
             "You are writing an ESSAY post for Twitter/X.\n"
