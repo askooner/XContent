@@ -35,6 +35,74 @@ def _get_anthropic_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
+def _get_library_context(client, topic: str, angle: str = "",
+                         exclude_video_id: str = "", max_sources: int = 2) -> str:
+    """Search the transcript library for material related to the current topic.
+
+    Returns a block of text with relevant quotes/stories from OTHER transcripts
+    that can be woven into the post for cross-founder connections.
+    Returns empty string if library is empty or no matches found.
+    """
+    try:
+        from .knowledge_base import search_transcripts, get_transcript_text
+    except Exception:
+        return ""
+
+    search_terms = [topic]
+    if angle:
+        search_terms.append(angle)
+
+    all_matches = []
+    seen = set()
+    if exclude_video_id:
+        seen.add(exclude_video_id)
+
+    for term in search_terms:
+        try:
+            matches = search_transcripts(term, limit=5)
+        except Exception:
+            continue
+        for m in matches:
+            if m["video_id"] not in seen:
+                seen.add(m["video_id"])
+                all_matches.append(m)
+
+    if not all_matches:
+        return ""
+
+    top = all_matches[:max_sources]
+    parts = []
+    for match in top:
+        full_text = get_transcript_text(match["video_id"])
+        if not full_text:
+            continue
+
+        extract = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1000,
+            system=(
+                "Extract ONLY the parts of this transcript that relate to the "
+                "topic below. Pull out specific verbatim quotes, stories, numbers. "
+                "Keep quotes exact. If nothing relevant, output NOTHING_RELEVANT.\n\n"
+                f"TOPIC: {topic}"
+                + (f"\nANGLE: {angle}" if angle else "")
+            ),
+            messages=[{"role": "user", "content": full_text[:60000]}],
+        )
+        extracted = extract.content[0].text.strip()
+        if extracted and "NOTHING_RELEVANT" not in extracted:
+            parts.append(f"[From: {match['video_title']}]\n{extracted}")
+
+    if not parts:
+        return ""
+
+    return (
+        "\n\n--- RELATED MATERIAL FROM YOUR LIBRARY (use to weave cross-founder connections) ---\n"
+        + "\n\n".join(parts)
+        + "\n--- END RELATED MATERIAL ---"
+    )
+
+
 def _extract_key_material(client, transcript: str, topic: str, focus: str, video_title: str) -> str:
     """Step 1: Use Haiku to cheaply extract only the relevant parts of a long transcript."""
     extract_prompt = "Extract the most important quotes, stories, numbers, and insights"
@@ -210,8 +278,15 @@ def generate_batch(
         key_material = idea.get("key_material", idea.get("key_quotes", ""))
         angle = idea.get("angle", "")
 
+        # Search the library for related material from OTHER transcripts
+        library_context = _get_library_context(client, title, angle, exclude_video_id=video_id)
+
+        source_material = key_material
+        if library_context:
+            source_material = key_material + "\n" + library_context
+
         user_prompt = _build_user_prompt(
-            transcript=key_material,
+            transcript=source_material,
             topic=title,
             focus=angle,
             additional_instructions=additional_instructions,
@@ -279,6 +354,7 @@ def generate(
     additional_instructions: str = "",
     model: str | None = None,
     video_title: str = "",
+    video_id: str = "",
 ) -> str:
     """Generate content in your style from a transcript.
 
@@ -296,6 +372,11 @@ def generate(
     # For long transcripts, extract key material first (cheap step)
     if len(transcript) > 15_000:
         transcript = _extract_key_material(client, transcript, topic, focus, video_title)
+
+    # Search the library for related material from OTHER transcripts
+    library_context = _get_library_context(client, topic or video_title, focus, exclude_video_id=video_id)
+    if library_context:
+        transcript = transcript + "\n" + library_context
 
     style_prompt = build_style_prompt(style_name)
 
@@ -669,6 +750,7 @@ def generate_and_save(
         additional_instructions=additional_instructions,
         model=model,
         video_title=video_title,
+        video_id=video_id,
     )
 
     # Save as plain text (easy to copy/share) + metadata sidecar
