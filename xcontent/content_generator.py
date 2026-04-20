@@ -920,11 +920,13 @@ PROHIBITED PHRASES — never use any of these:
 - "For context, ..."
 - "Hits home" or "Hits different"
 - "Most do [X]..."
+- "No [X]. No [Y]. Just [Z]." — this staccato parallel triplet is banned
 - Buzzwords: "game-changer", "revolutionary", "disrupting", "reframe"
 - Emojis
 - Listicle framing inside prose (numbered lists embedded in narrative)
 - Do NOT overuse em-dashes as a stylistic crutch
-- Do NOT rely on overly parallel sentence structures
+- Do NOT rely on overly parallel sentence structures (repeating the same
+  grammatical pattern 3+ times in a row to build rhythm — find a different way)
 """
 
     # Inject feedback loop if available
