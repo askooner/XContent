@@ -920,13 +920,24 @@ PROHIBITED PHRASES — never use any of these:
 - "For context, ..."
 - "Hits home" or "Hits different"
 - "Most do [X]..."
-- "No [X]. No [Y]. Just [Z]." — this staccato parallel triplet is banned
 - Buzzwords: "game-changer", "revolutionary", "disrupting", "reframe"
 - Emojis
 - Listicle framing inside prose (numbered lists embedded in narrative)
 - Do NOT overuse em-dashes as a stylistic crutch
-- Do NOT rely on overly parallel sentence structures (repeating the same
-  grammatical pattern 3+ times in a row to build rhythm — find a different way)
+
+PARALLEL STRUCTURE BAN — THIS IS CRITICAL:
+Do NOT repeat the same grammatical opening 2+ times in a row. Period.
+This is the single most common failure mode. Examples of what NEVER to write:
+  BAD: "Not clean. Not restaurant clean. Baby-lickable clean."
+  BAD: "No five-year lock. No database reminders. Just raw exposure."
+  BAD: "You can't cut corners. You can't hire badly. You can't pretend."
+  BAD: "Not because they invented X. Not because they have Y."
+  BAD: "He didn't do X. He didn't do Y. He did Z."
+  BAD: "It forces you to build. Train. Think. Hire."
+Every one of these is a crutch. If you catch yourself starting consecutive
+sentences with the same word or phrase, STOP and rewrite. Vary the sentence
+structure. Make each sentence arrive differently than the one before it.
+The reader should never be able to predict the next sentence's shape.
 """
 
     # Inject feedback loop if available
