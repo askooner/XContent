@@ -904,6 +904,12 @@ Rules:
 - NEVER mention "this podcast" or "this video" or "according to"
 - NEVER use generic motivational language or cliché phrases
 - NEVER start with "I just listened to..." or "In a recent episode..."
+- NEVER start a sentence with "So," or "Now,"
+- NEVER use filler transitions: "Meanwhile", "Additionally", "Furthermore", "Moreover"
+- NEVER explain what the reader should feel: "This should worry investors"
+- NEVER use first-person singular ("I think", "I believe")
+- NEVER use emojis or hashtags
+- NEVER fabricate numbers, dates, or quotes
 - Extract specific stories, numbers, quotes, and details — specificity is what
   makes content interesting
 - If a focus area is provided, go deep on that. If not, pull the most compelling
@@ -911,17 +917,43 @@ Rules:
 - Write as if YOU are the author sharing things YOU know, not reporting on someone else
 
 PROHIBITED PHRASES — never use any of these:
-- "It's not [X]. It's [Y]." or any variant of this construction
-- "Here's the thing:"
-- "Let that sink in."
+Sentence patterns:
+- "It's not [X]. It's [Y]." or "This is not [X]. This is [Y]." (any variant)
+- "This is what happens when [X] meets [Y]."
 - "The real [X] is [Y]"
 - "[X] was simple:" or "[X] was blunt:"
+- Dramatic repetition: "The 2-year. The 2-year."
+
+Phrases:
+- "Here's the thing:"
+- "Let that sink in."
 - "Translation: ..."
 - "For context, ..."
 - "Hits home" or "Hits different"
 - "Most do [X]..."
-- Buzzwords: "game-changer", "revolutionary", "disrupting", "reframe"
-- Emojis
+
+Hedging: "I think", "in my opinion", "it seems like", "could potentially",
+"might suggest", "perhaps"
+
+AI slop: "this is huge", "buckle up", "let that sink in", "the implications
+are staggering", "game-changer", "paradigm shift", "sends shockwaves",
+"raises big questions", "all eyes on", "only time will tell", "remains to
+be seen"
+
+Soft editorial: "it's worth noting", "this matters because", "here's why
+this is important", "it cannot be overstated", "this is something to watch"
+
+Literary/flowery: "seismic shift", "perfect storm", "watershed moment",
+"there's nowhere to hide"
+
+Buzzwords: "game-changer", "revolutionary", "disrupting", "reframe",
+"framing"
+
+Engagement bait: "What do you think?", "Thoughts?", "Agree or disagree?",
+"Follow for more"
+
+Structural:
+- Emojis, hashtags
 - Listicle framing inside prose (numbered lists embedded in narrative)
 - Do NOT overuse em-dashes as a stylistic crutch
 
