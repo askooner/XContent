@@ -1087,6 +1087,8 @@ def story(topic, style_name, model, instructions, max_sources, no_typefully, no_
 
 def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple[int, int]:
     """Ingest transcripts from a single channel. Returns (success, skipped) counts."""
+    import time
+
     from .knowledge_base import get_transcript_text, save_transcript
     from .source_manager import list_channel_videos
 
@@ -1109,23 +1111,36 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
 
     success = 0
     skipped = 0
+    first_error = None
     for i, v in enumerate(new_videos, 1):
+        console.print(f"    [{i}/{len(new_videos)}] {v['title'][:55]}...", end=" ")
         try:
-            # Try English first, then fall back to any available language
             try:
                 transcript = ytt_api.fetch(v["video_id"], languages=["en"])
             except Exception:
                 transcript = ytt_api.fetch(v["video_id"])
             text = " ".join(entry.text for entry in transcript.snippets)
             if len(text.strip()) < 100:
+                console.print("[dim]too short, skipped[/dim]")
                 skipped += 1
                 continue
             save_transcript(v["video_id"], v["title"], text, v["channel"])
+            console.print(f"[green]{len(text):,} chars[/green]")
             success += 1
-        except Exception:
+        except Exception as e:
+            err_msg = str(e).split("\n")[0][:80]
+            console.print(f"[dim]skipped ({err_msg})[/dim]")
+            if not first_error:
+                first_error = str(e)
             skipped += 1
 
+        # Delay to avoid YouTube rate-limiting
+        if i < len(new_videos):
+            time.sleep(1.5)
+
     console.print(f"  [green]{success} added, {skipped} skipped[/green]")
+    if first_error and success == 0:
+        console.print(f"  [yellow]First error: {first_error[:150]}[/yellow]")
     return success, skipped
 
 
