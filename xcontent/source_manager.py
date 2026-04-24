@@ -288,6 +288,27 @@ def list_channel_videos(channel_input: str, max_results: int = 200) -> list[dict
     return videos
 
 
+def _get_ytt_api():
+    """Get a YouTubeTranscriptApi instance, with cookies if available."""
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if cookie_path.exists():
+        try:
+            from http.cookiejar import MozillaCookieJar
+
+            import requests as _req
+
+            jar = MozillaCookieJar(str(cookie_path))
+            jar.load(ignore_discard=True, ignore_expires=True)
+            session = _req.Session()
+            session.cookies = jar
+            return YouTubeTranscriptApi(http_client=session)
+        except Exception:
+            pass
+    return YouTubeTranscriptApi()
+
+
 def get_transcript(video_id: str, languages: list[str] | None = None,
                    video_title: str = "", channel: str = "") -> str:
     """Fetch the transcript for a YouTube video.
@@ -310,18 +331,10 @@ def get_transcript(video_id: str, languages: list[str] | None = None,
     if cached:
         return cached
 
-    from youtube_transcript_api import YouTubeTranscriptApi
-
     if languages is None:
         languages = ["en"]
 
-    # Use cookies if available — required for most YouTube channels
-    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
-    if cookie_path.exists():
-        ytt_api = YouTubeTranscriptApi(cookie_path=str(cookie_path))
-    else:
-        ytt_api = YouTubeTranscriptApi()
-
+    ytt_api = _get_ytt_api()
     transcript = ytt_api.fetch(video_id, languages=languages)
 
     # Join all segments into a readable string
@@ -339,16 +352,10 @@ def get_transcript(video_id: str, languages: list[str] | None = None,
 
 def get_transcript_with_timestamps(video_id: str, languages: list[str] | None = None) -> list[dict]:
     """Fetch transcript with timestamps for each segment."""
-    from youtube_transcript_api import YouTubeTranscriptApi
-
     if languages is None:
         languages = ["en"]
 
-    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
-    if cookie_path.exists():
-        ytt_api = YouTubeTranscriptApi(cookie_path=str(cookie_path))
-    else:
-        ytt_api = YouTubeTranscriptApi()
+    ytt_api = _get_ytt_api()
     transcript = ytt_api.fetch(video_id, languages=languages)
 
     return [
