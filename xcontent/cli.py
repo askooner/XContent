@@ -23,6 +23,7 @@ Usage:
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -1076,48 +1077,24 @@ def story(topic, style_name, model, instructions, max_sources, no_typefully, no_
 # ── Ingest Command (Bulk Import) ──────────────────────────────────
 
 
-@cli.command()
-@click.argument("channel")
-@click.option("--limit", "-n", default=100, help="Max videos to ingest")
-def ingest(channel, limit):
-    """Bulk-import transcripts from a YouTube channel into your library.
-
-    \b
-    CHANNEL can be a URL, @handle, or channel ID.
-    Transcripts are fetched for free (no YouTube API quota for captions).
-
-    \b
-    Examples:
-        xcontent ingest "@founderspodcast" --limit 50
-        xcontent ingest "https://youtube.com/@lexfridman"
-    """
-    from .knowledge_base import count_transcripts, get_transcript_text, save_transcript
+def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple[int, int]:
+    """Ingest transcripts from a single channel. Returns (success, skipped) counts."""
+    from .knowledge_base import get_transcript_text, save_transcript
     from .source_manager import list_channel_videos
 
-    before = count_transcripts()
-    console.print(f"\n[bold]Listing videos from channel...[/bold]")
-
     try:
-        with console.status("Fetching video list..."):
-            videos = list_channel_videos(channel, max_results=limit)
+        videos = list_channel_videos(channel_handle, max_results=limit)
     except Exception as e:
-        console.print(f"[red]Error listing channel: {e}[/red]")
-        return
+        console.print(f"  [red]Error listing channel: {e}[/red]")
+        return 0, 0
 
-    console.print(f"[green]Found {len(videos)} videos.[/green]")
-
-    # Filter out already-stored transcripts
-    new_videos = []
-    for v in videos:
-        existing = get_transcript_text(v["video_id"])
-        if not existing:
-            new_videos.append(v)
+    new_videos = [v for v in videos if not get_transcript_text(v["video_id"])]
 
     if not new_videos:
-        console.print(f"[yellow]All {len(videos)} videos already in your library. Nothing to do.[/yellow]")
-        return
+        console.print(f"  [dim]All {len(videos)} videos already stored.[/dim]")
+        return 0, 0
 
-    console.print(f"[cyan]{len(new_videos)} new videos to ingest ({len(videos) - len(new_videos)} already stored).[/cyan]\n")
+    console.print(f"  [cyan]{len(new_videos)} new videos ({len(videos) - len(new_videos)} already stored)[/cyan]")
 
     from youtube_transcript_api import YouTubeTranscriptApi
     ytt_api = YouTubeTranscriptApi()
@@ -1125,21 +1102,73 @@ def ingest(channel, limit):
     success = 0
     skipped = 0
     for i, v in enumerate(new_videos, 1):
-        console.print(f"  [{i}/{len(new_videos)}] {v['title'][:60]}...", end=" ")
         try:
             transcript = ytt_api.fetch(v["video_id"], languages=["en"])
             text = " ".join(entry.text for entry in transcript.snippets)
             save_transcript(v["video_id"], v["title"], text, v["channel"])
-            console.print(f"[green]{len(text):,} chars[/green]")
             success += 1
-        except Exception as e:
-            err = str(e)[:50]
-            console.print(f"[dim]skipped ({err})[/dim]")
+        except Exception:
             skipped += 1
 
-    after = count_transcripts()
-    console.print(f"\n[bold green]Done. Added {success} transcripts ({skipped} skipped).[/bold green]")
-    console.print(f"[dim]Library: {before} → {after} transcripts total.[/dim]")
+    console.print(f"  [green]{success} added, {skipped} skipped[/green]")
+    return success, skipped
+
+
+@cli.command()
+@click.argument("channel", required=False)
+@click.option("--all", "ingest_all", is_flag=True, help="Ingest from all channels in channels.json")
+@click.option("--limit", "-n", default=100, help="Max videos per channel")
+def ingest(channel, ingest_all, limit):
+    """Bulk-import transcripts from YouTube channels into your library.
+
+    \b
+    Single channel:
+        xcontent ingest "@founderspodcast" --limit 50
+
+    \b
+    All saved channels (from channels.json):
+        xcontent ingest --all --limit 50
+    """
+    import json as _json
+
+    from .knowledge_base import count_transcripts
+
+    if not channel and not ingest_all:
+        console.print("[red]Provide a channel or use --all to ingest from all saved channels.[/red]")
+        return
+
+    before = count_transcripts()
+
+    if ingest_all:
+        channels_file = Path(__file__).resolve().parent.parent / "channels.json"
+        if not channels_file.exists():
+            console.print("[red]channels.json not found. Create it in the project root.[/red]")
+            return
+
+        channels = _json.loads(channels_file.read_text())
+        console.print(f"\n[bold]Ingesting from {len(channels)} channels (limit {limit} per channel)...[/bold]\n")
+
+        total_success = 0
+        total_skipped = 0
+        for ch in channels:
+            name = ch.get("name", ch.get("handle", ""))
+            handle = ch.get("handle", ch.get("url", ""))
+            console.print(f"[bold]{name}[/bold] ({handle})")
+            s, sk = _ingest_channel(handle, name, limit)
+            total_success += s
+            total_skipped += sk
+            console.print()
+
+        after = count_transcripts()
+        console.print(f"[bold green]Done. Added {total_success} transcripts total ({total_skipped} skipped).[/bold green]")
+        console.print(f"[dim]Library: {before} → {after} transcripts.[/dim]")
+    else:
+        console.print(f"\n[bold]Ingesting from channel...[/bold]\n")
+        console.print(f"[bold]{channel}[/bold]")
+        s, sk = _ingest_channel(channel, channel, limit)
+        after = count_transcripts()
+        console.print(f"\n[bold green]Done. Added {s} transcripts ({sk} skipped).[/bold green]")
+        console.print(f"[dim]Library: {before} → {after} transcripts.[/dim]")
 
 
 # ── Auto Command (Generate from Library) ─────────────────────────
