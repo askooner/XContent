@@ -1107,7 +1107,13 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
     console.print(f"  [cyan]{len(new_videos)} new videos ({len(videos) - len(new_videos)} already stored)[/cyan]")
 
     from youtube_transcript_api import YouTubeTranscriptApi
-    ytt_api = YouTubeTranscriptApi()
+
+    # Use cookies if available — required for most YouTube channels
+    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if cookie_path.exists():
+        ytt_api = YouTubeTranscriptApi(cookie_path=str(cookie_path))
+    else:
+        ytt_api = YouTubeTranscriptApi()
 
     success = 0
     skipped = 0

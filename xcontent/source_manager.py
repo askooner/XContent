@@ -315,7 +315,13 @@ def get_transcript(video_id: str, languages: list[str] | None = None,
     if languages is None:
         languages = ["en"]
 
-    ytt_api = YouTubeTranscriptApi()
+    # Use cookies if available — required for most YouTube channels
+    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if cookie_path.exists():
+        ytt_api = YouTubeTranscriptApi(cookie_path=str(cookie_path))
+    else:
+        ytt_api = YouTubeTranscriptApi()
+
     transcript = ytt_api.fetch(video_id, languages=languages)
 
     # Join all segments into a readable string
@@ -338,7 +344,11 @@ def get_transcript_with_timestamps(video_id: str, languages: list[str] | None = 
     if languages is None:
         languages = ["en"]
 
-    ytt_api = YouTubeTranscriptApi()
+    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if cookie_path.exists():
+        ytt_api = YouTubeTranscriptApi(cookie_path=str(cookie_path))
+    else:
+        ytt_api = YouTubeTranscriptApi()
     transcript = ytt_api.fetch(video_id, languages=languages)
 
     return [
