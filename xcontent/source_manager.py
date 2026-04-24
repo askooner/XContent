@@ -267,42 +267,43 @@ def list_channel_videos(channel_input: str, max_results: int = 200,
     uploads_playlist = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
     channel_name = items[0]["snippet"]["title"]
 
-    # Fetch more than needed since we'll filter out Shorts
-    fetch_limit = max_results * 3
-    raw_videos = []
+    # Keep paginating through uploads until we find enough long-form videos.
+    # Channels that post lots of Shorts may need deep scanning.
+    videos = []
     page_token = None
+    max_pages = 20  # safety limit: 20 pages x 50 = 1000 uploads scanned max
 
-    while len(raw_videos) < fetch_limit:
+    for _ in range(max_pages):
+        if len(videos) >= max_results:
+            break
+
         params = {
             "part": "snippet",
             "playlistId": uploads_playlist,
-            "maxResults": min(50, fetch_limit - len(raw_videos)),
+            "maxResults": 50,
         }
         if page_token:
             params["pageToken"] = page_token
 
         resp = youtube.playlistItems().list(**params).execute()
 
+        page_videos = []
         for item in resp.get("items", []):
             snippet = item["snippet"]
             vid = snippet.get("resourceId", {}).get("videoId", "")
             if vid:
-                raw_videos.append({
+                page_videos.append({
                     "video_id": vid,
                     "title": snippet.get("title", ""),
                     "channel": channel_name,
                     "published": snippet.get("publishedAt", "")[:10],
                 })
 
-        page_token = resp.get("nextPageToken")
-        if not page_token:
+        if not page_videos:
             break
 
-    # Filter out Shorts by checking video duration (batch query, 50 at a time)
-    videos = []
-    for i in range(0, len(raw_videos), 50):
-        batch = raw_videos[i:i + 50]
-        ids = ",".join(v["video_id"] for v in batch)
+        # Check durations for this page and keep only long-form
+        ids = ",".join(v["video_id"] for v in page_videos)
         details = youtube.videos().list(part="contentDetails", id=ids).execute()
 
         duration_map = {}
@@ -311,14 +312,14 @@ def list_channel_videos(channel_input: str, max_results: int = 200,
                 item["contentDetails"].get("duration", "PT0S")
             )
 
-        for v in batch:
-            dur = duration_map.get(v["video_id"], 0)
-            if dur >= min_duration:
+        for v in page_videos:
+            if duration_map.get(v["video_id"], 0) >= min_duration:
                 videos.append(v)
                 if len(videos) >= max_results:
                     break
 
-        if len(videos) >= max_results:
+        page_token = resp.get("nextPageToken")
+        if not page_token:
             break
 
     return videos
