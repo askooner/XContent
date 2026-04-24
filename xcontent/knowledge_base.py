@@ -133,6 +133,16 @@ def _get_db() -> sqlite3.Connection:
         END;
     """)
 
+    # Track which Typefully drafts we've already synced for edit detection
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS synced_edits (
+            typefully_draft_id TEXT PRIMARY KEY,
+            post_id INTEGER,
+            similarity REAL,
+            synced_at TEXT NOT NULL
+        )
+    """)
+
     db.commit()
     return db
 
@@ -400,3 +410,64 @@ def get_recent_feedback(style: str = "", content_type: str = "", limit: int = 5)
     rows = db.execute(query, params).fetchall()
     db.close()
     return [dict(r) for r in rows]
+
+
+# ── Edit Detection ──────────────────────────────────────────────────
+
+
+def find_matching_post(published_text: str, min_similarity: float = 0.3) -> dict | None:
+    """Find the generated post that best matches a published text.
+
+    Uses SequenceMatcher to fuzzy-match against all stored posts.
+    Returns the best match (with similarity score) or None.
+    """
+    from difflib import SequenceMatcher
+
+    db = _get_db()
+    rows = db.execute(
+        "SELECT * FROM posts ORDER BY created_at DESC LIMIT 500"
+    ).fetchall()
+    db.close()
+
+    best_match = None
+    best_ratio = 0.0
+
+    for row in rows:
+        ratio = SequenceMatcher(None, row["content"], published_text).ratio()
+        if ratio > best_ratio and ratio >= min_similarity:
+            best_ratio = ratio
+            best_match = dict(row)
+
+    if best_match:
+        best_match["similarity"] = best_ratio
+
+    return best_match
+
+
+def is_draft_synced(typefully_draft_id: str) -> bool:
+    db = _get_db()
+    row = db.execute(
+        "SELECT 1 FROM synced_edits WHERE typefully_draft_id = ?",
+        (typefully_draft_id,),
+    ).fetchone()
+    db.close()
+    return row is not None
+
+
+def mark_draft_synced(typefully_draft_id: str, post_id: int, similarity: float) -> None:
+    db = _get_db()
+    db.execute(
+        """INSERT OR REPLACE INTO synced_edits
+           (typefully_draft_id, post_id, similarity, synced_at)
+           VALUES (?, ?, ?, ?)""",
+        (typefully_draft_id, post_id, similarity, datetime.now().isoformat()),
+    )
+    db.commit()
+    db.close()
+
+
+def count_feedback() -> int:
+    db = _get_db()
+    row = db.execute("SELECT COUNT(*) AS n FROM feedback").fetchone()
+    db.close()
+    return row["n"] if row else 0

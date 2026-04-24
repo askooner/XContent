@@ -88,3 +88,54 @@ def push_drafts(posts: list[str]) -> list[dict]:
         result = create_draft(post)
         results.append(result)
     return results
+
+
+def get_published_drafts(limit: int = 50) -> list[dict]:
+    """Fetch recently published drafts from Typefully.
+
+    Returns list of dicts with at least {id, text, published_at}.
+    """
+    api_key = _get_api_key()
+    social_set_id = _get_social_set_id()
+
+    resp = requests.get(
+        f"https://api.typefully.com/v2/social-sets/{social_set_id}/drafts",
+        headers={"Authorization": f"Bearer {api_key}"},
+        params={"status": "published"},
+    )
+
+    if resp.status_code in (401, 403):
+        raise RuntimeError(f"Typefully API error {resp.status_code}: {resp.text}")
+    resp.raise_for_status()
+
+    body = resp.json()
+
+    # Handle both list and paginated response formats
+    items = body if isinstance(body, list) else body.get("data", body.get("drafts", []))
+    if not isinstance(items, list):
+        items = []
+
+    results = []
+    for item in items[:limit]:
+        draft_id = item.get("id", "")
+        published_at = item.get("published_at", item.get("updated_at", ""))
+
+        # Extract the post text — try nested platforms.x.posts first, then fallback
+        text = ""
+        platforms = item.get("platforms", {})
+        x_data = platforms.get("x", {})
+        posts = x_data.get("posts", [])
+        if posts:
+            text = posts[0].get("text", "")
+
+        if not text:
+            text = item.get("preview", item.get("text", item.get("draft_title", "")))
+
+        if text:
+            results.append({
+                "id": str(draft_id),
+                "text": text,
+                "published_at": published_at,
+            })
+
+    return results

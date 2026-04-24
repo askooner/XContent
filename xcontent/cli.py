@@ -1260,6 +1260,116 @@ def auto(style_name, count, content_type, model, instructions, no_typefully, min
     console.print(table)
 
 
+# ── Sync Edits (Edit Detection from Typefully) ──────────────────────
+
+
+@cli.command("sync-edits")
+@click.option("--style", "-s", "style_name", default="insights", help="Style to tag feedback as")
+@click.option("--type", "-T", "content_type", default="insights", help="Content type to tag feedback as")
+@click.option("--dry-run", is_flag=True, help="Show matches without saving feedback")
+def sync_edits(style_name, content_type, dry_run):
+    """Pull published posts from Typefully and learn from your edits.
+
+    \b
+    Compares what you actually posted vs what the system generated.
+    Every edit you made becomes a training signal — the system learns
+    your corrections automatically.
+
+    \b
+    Run this after you've published some posts:
+        xcontent sync-edits
+        xcontent sync-edits --dry-run   # preview without saving
+    """
+    from .knowledge_base import (
+        count_feedback,
+        find_matching_post,
+        is_draft_synced,
+        mark_draft_synced,
+        save_feedback,
+    )
+    from .typefully import get_published_drafts
+
+    console.print("\n[bold]Pulling published posts from Typefully...[/bold]")
+
+    try:
+        published = get_published_drafts(limit=50)
+    except Exception as e:
+        console.print(f"[red]Error fetching from Typefully: {e}[/red]")
+        return
+
+    if not published:
+        console.print("[yellow]No published posts found on Typefully.[/yellow]")
+        return
+
+    console.print(f"[green]Found {len(published)} published posts.[/green]\n")
+
+    new_count = 0
+    skip_count = 0
+    no_match_count = 0
+    identical_count = 0
+    feedback_before = count_feedback()
+
+    for post in published:
+        draft_id = post["id"]
+
+        if is_draft_synced(draft_id):
+            skip_count += 1
+            continue
+
+        published_text = post["text"]
+        match = find_matching_post(published_text)
+
+        if not match:
+            no_match_count += 1
+            if not dry_run:
+                mark_draft_synced(draft_id, 0, 0.0)
+            continue
+
+        similarity = match["similarity"]
+
+        if similarity >= 0.95:
+            identical_count += 1
+            if not dry_run:
+                mark_draft_synced(draft_id, match["id"], similarity)
+            continue
+
+        # Found edited post — this is the gold
+        new_count += 1
+        topic = match.get("topic", "")[:40]
+        console.print(f"  [green]Match:[/green] {topic} — [cyan]{similarity:.0%} similar[/cyan]")
+
+        # Show a brief diff preview
+        gen_preview = match["content"][:80].replace("\n", " ")
+        pub_preview = published_text[:80].replace("\n", " ")
+        console.print(f"    [dim]Generated: {gen_preview}...[/dim]")
+        console.print(f"    [dim]Posted:    {pub_preview}...[/dim]")
+
+        if not dry_run:
+            save_feedback(
+                style=style_name,
+                content_type=content_type,
+                generated_text=match["content"],
+                posted_text=published_text,
+                video_title=match.get("video_title", ""),
+            )
+            mark_draft_synced(draft_id, match["id"], similarity)
+
+    console.print()
+    action = "Would save" if dry_run else "Saved"
+    console.print(f"[bold green]{action} {new_count} edit pair(s) as feedback.[/bold green]")
+    if identical_count:
+        console.print(f"[dim]{identical_count} posts published without edits (no feedback needed).[/dim]")
+    if no_match_count:
+        console.print(f"[dim]{no_match_count} posts didn't match any generated content (written manually?).[/dim]")
+    if skip_count:
+        console.print(f"[dim]{skip_count} already synced.[/dim]")
+
+    if not dry_run and new_count > 0:
+        total = count_feedback()
+        console.print(f"\n[bold]Feedback bank: {feedback_before} → {total} pairs.[/bold]")
+        console.print("[dim]These edits will be injected into future generation prompts automatically.[/dim]")
+
+
 # ── Library Commands (Knowledge Base) ──────────────────────────────
 
 
