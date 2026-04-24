@@ -232,6 +232,62 @@ def get_video_details(video_id: str) -> dict:
 # ── Transcript Fetching ─────────────────────────────────────────────
 
 
+def list_channel_videos(channel_input: str, max_results: int = 200) -> list[dict]:
+    """List all videos from a YouTube channel.
+
+    Uses the channel's uploads playlist to enumerate videos efficiently.
+    Costs ~1 API unit per 50 videos listed.
+
+    Args:
+        channel_input: Channel URL, @handle, channel ID, or saved channel name.
+        max_results: Max videos to return.
+
+    Returns:
+        List of {video_id, title, channel, published} dicts.
+    """
+    youtube = _get_youtube_client()
+    channel_id = _resolve_channel_id(youtube, channel_input)
+
+    resp = youtube.channels().list(part="contentDetails,snippet", id=channel_id).execute()
+    items = resp.get("items", [])
+    if not items:
+        raise ValueError(f"Channel not found: {channel_id}")
+
+    uploads_playlist = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    channel_name = items[0]["snippet"]["title"]
+
+    videos = []
+    page_token = None
+
+    while len(videos) < max_results:
+        params = {
+            "part": "snippet",
+            "playlistId": uploads_playlist,
+            "maxResults": min(50, max_results - len(videos)),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        resp = youtube.playlistItems().list(**params).execute()
+
+        for item in resp.get("items", []):
+            snippet = item["snippet"]
+            vid = snippet.get("resourceId", {}).get("videoId", "")
+            if vid:
+                videos.append({
+                    "video_id": vid,
+                    "title": snippet.get("title", ""),
+                    "channel": channel_name,
+                    "published": snippet.get("publishedAt", "")[:10],
+                })
+
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    return videos
+
+
 def get_transcript(video_id: str, languages: list[str] | None = None,
                    video_title: str = "", channel: str = "") -> str:
     """Fetch the transcript for a YouTube video.

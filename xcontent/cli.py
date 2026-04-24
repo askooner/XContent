@@ -1073,6 +1073,193 @@ def story(topic, style_name, model, instructions, max_sources, no_typefully, no_
             console.print(f"[yellow]Typefully push failed: {e}[/yellow]")
 
 
+# ── Ingest Command (Bulk Import) ──────────────────────────────────
+
+
+@cli.command()
+@click.argument("channel")
+@click.option("--limit", "-n", default=100, help="Max videos to ingest")
+def ingest(channel, limit):
+    """Bulk-import transcripts from a YouTube channel into your library.
+
+    \b
+    CHANNEL can be a URL, @handle, or channel ID.
+    Transcripts are fetched for free (no YouTube API quota for captions).
+
+    \b
+    Examples:
+        xcontent ingest "@founderspodcast" --limit 50
+        xcontent ingest "https://youtube.com/@lexfridman"
+    """
+    from .knowledge_base import count_transcripts, get_transcript_text, save_transcript
+    from .source_manager import list_channel_videos
+
+    before = count_transcripts()
+    console.print(f"\n[bold]Listing videos from channel...[/bold]")
+
+    try:
+        with console.status("Fetching video list..."):
+            videos = list_channel_videos(channel, max_results=limit)
+    except Exception as e:
+        console.print(f"[red]Error listing channel: {e}[/red]")
+        return
+
+    console.print(f"[green]Found {len(videos)} videos.[/green]")
+
+    # Filter out already-stored transcripts
+    new_videos = []
+    for v in videos:
+        existing = get_transcript_text(v["video_id"])
+        if not existing:
+            new_videos.append(v)
+
+    if not new_videos:
+        console.print(f"[yellow]All {len(videos)} videos already in your library. Nothing to do.[/yellow]")
+        return
+
+    console.print(f"[cyan]{len(new_videos)} new videos to ingest ({len(videos) - len(new_videos)} already stored).[/cyan]\n")
+
+    from youtube_transcript_api import YouTubeTranscriptApi
+    ytt_api = YouTubeTranscriptApi()
+
+    success = 0
+    skipped = 0
+    for i, v in enumerate(new_videos, 1):
+        console.print(f"  [{i}/{len(new_videos)}] {v['title'][:60]}...", end=" ")
+        try:
+            transcript = ytt_api.fetch(v["video_id"], languages=["en"])
+            text = " ".join(entry.text for entry in transcript.snippets)
+            save_transcript(v["video_id"], v["title"], text, v["channel"])
+            console.print(f"[green]{len(text):,} chars[/green]")
+            success += 1
+        except Exception as e:
+            err = str(e)[:50]
+            console.print(f"[dim]skipped ({err})[/dim]")
+            skipped += 1
+
+    after = count_transcripts()
+    console.print(f"\n[bold green]Done. Added {success} transcripts ({skipped} skipped).[/bold green]")
+    console.print(f"[dim]Library: {before} → {after} transcripts total.[/dim]")
+
+
+# ── Auto Command (Generate from Library) ─────────────────────────
+
+
+@cli.command()
+@click.option("--style", "-s", "style_name", default="insights", help="Style profile to use")
+@click.option("--count", "-n", default=10, help="Number of posts to generate")
+@click.option("--type", "-T", "content_type", default="insights",
+              type=click.Choice(["insights", "essays", "transcripts", "quote-tweets"]),
+              help="Content format")
+@click.option("--model", "-m", default=None, help="Claude model to use")
+@click.option("--instructions", "-i", default="", help="Additional instructions")
+@click.option("--no-typefully", is_flag=True, help="Don't push to Typefully")
+@click.option("--mine", default=5, help="Max unmined transcripts to process if ideas run low")
+def auto(style_name, count, content_type, model, instructions, no_typefully, mine):
+    """Auto-generate posts from your library — no links needed.
+
+    \b
+    Picks unused ideas from your transcript library, diversifies across
+    different founders, generates posts through a quality gate, and
+    only shows you the ones that pass.
+
+    \b
+    Fill your library first with 'xcontent ingest', then:
+        xcontent auto --count 20 --style insights --no-typefully
+    """
+    from .knowledge_base import count_transcripts, get_unused_ideas
+
+    total_transcripts = count_transcripts()
+    if total_transcripts == 0:
+        console.print("[red]Your library is empty. Run 'xcontent ingest <channel>' first.[/red]")
+        return
+
+    unused = get_unused_ideas(limit=1)
+    console.print(f"\n[bold]Auto-generating {count} posts from your library[/bold]")
+    console.print(f"[dim]{total_transcripts} transcripts available[/dim]\n")
+
+    from .content_generator import generate_auto
+
+    def on_progress(step, current, total):
+        if step == "mining":
+            console.print("[dim]  Mining new transcript for ideas...[/dim]")
+        elif step == "generating":
+            console.print(f"[dim]  Generating post {current}/{total}...[/dim]")
+
+    try:
+        results = generate_auto(
+            style_name=style_name,
+            content_type=content_type,
+            count=count,
+            model=model,
+            additional_instructions=instructions,
+            mine_new=mine,
+            on_progress=on_progress,
+        )
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    if not results:
+        console.print("[yellow]No posts generated. Add more transcripts with 'xcontent ingest'.[/yellow]")
+        return
+
+    passed = [r for r in results if r["passed"]]
+    failed = [r for r in results if not r["passed"]]
+
+    console.print(f"\n[bold green]Generated {len(results)} posts ({len(passed)} passed quality, {len(failed)} flagged).[/bold green]\n")
+
+    for i, r in enumerate(results, 1):
+        status = "[green]PASS[/green]" if r["passed"] else f"[yellow]FLAGGED ({r['score']})[/yellow]"
+        console.print(f"[bold cyan]── Post {i} ── {status} ── {r['topic'][:50]} ──[/bold cyan]\n")
+        console.print(r["content"])
+        if r["issues"]:
+            console.print(f"\n[dim]Issues: {'; '.join(r['issues'][:3])}[/dim]")
+        console.print(f"[dim]Score: {r['score']} | Source: {r['video_title'][:40]}[/dim]")
+        console.print(f"[dim]Saved: {r['file_path']}[/dim]\n")
+
+    # Copy passed posts to clipboard
+    try:
+        import subprocess
+        clipboard = "\n\n---\n\n".join(r["content"] for r in passed)
+        subprocess.run(["pbcopy"], input=clipboard.encode(), check=True)
+        console.print(f"[green]{len(passed)} quality posts copied to clipboard.[/green]")
+    except Exception:
+        pass
+
+    # Push passed posts to Typefully
+    if not no_typefully and passed:
+        try:
+            from .typefully import push_drafts
+            with console.status(f"Pushing {len(passed)} drafts to Typefully..."):
+                drafts = push_drafts([r["content"] for r in passed])
+            console.print(f"[green]Pushed {len(drafts)} drafts to Typefully.[/green]")
+        except RuntimeError as e:
+            if "TYPEFULLY_API_KEY not set" in str(e):
+                pass
+            else:
+                console.print(f"[yellow]Typefully: {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Typefully push failed: {e}[/yellow]")
+
+    # Summary table
+    console.print()
+    table = Table(title="Summary")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Score", width=6)
+    table.add_column("Status", width=8)
+    table.add_column("Topic", max_width=40)
+    table.add_column("Source", style="dim", max_width=30)
+
+    for i, r in enumerate(results, 1):
+        status = "PASS" if r["passed"] else "FLAG"
+        style = "green" if r["passed"] else "yellow"
+        table.add_row(str(i), str(r["score"]), f"[{style}]{status}[/{style}]",
+                       r["topic"][:40], r["video_title"][:30])
+
+    console.print(table)
+
+
 # ── Library Commands (Knowledge Base) ──────────────────────────────
 
 

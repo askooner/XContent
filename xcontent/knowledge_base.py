@@ -360,6 +360,29 @@ def count_posts() -> int:
     return row["n"] if row else 0
 
 
+def get_unmined_transcripts(limit: int = 10) -> list[dict]:
+    """Get transcripts that haven't had ideas extracted yet."""
+    db = _get_db()
+    rows = db.execute(
+        """SELECT t.video_id, t.video_title, t.channel, t.char_count, t.fetched_at
+           FROM transcripts t
+           LEFT JOIN ideas i ON t.video_id = i.video_id
+           WHERE i.id IS NULL
+           ORDER BY t.fetched_at DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
+
+
+def count_transcripts() -> int:
+    db = _get_db()
+    row = db.execute("SELECT COUNT(*) AS n FROM transcripts").fetchone()
+    db.close()
+    return row["n"] if row else 0
+
+
 def get_recent_feedback(style: str = "", content_type: str = "", limit: int = 5) -> list[dict]:
     """Get recent feedback pairs to inject into prompts."""
     db = _get_db()

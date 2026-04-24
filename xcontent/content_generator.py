@@ -103,6 +103,43 @@ def _get_library_context(client, topic: str, angle: str = "",
     )
 
 
+def _generate_with_quality_gate(
+    client, model: str, system_prompt: str, user_prompt: str,
+    content_type: str = "insights", max_attempts: int = 2,
+) -> tuple[str, dict]:
+    """Generate a post and run it through the quality gate.
+
+    If the first attempt fails quality, regenerates with fix instructions.
+    Returns (content, quality_result).
+    """
+    from .quality_scorer import score_post
+
+    content = ""
+    result = {"score": 0, "passed": False, "issues": []}
+
+    for attempt in range(max_attempts):
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        content = response.content[0].text
+        result = score_post(content, content_type)
+
+        if result["passed"]:
+            return content, result
+
+        if attempt < max_attempts - 1:
+            fix_lines = "\n".join(f"- FIX: {issue}" for issue in result["issues"])
+            user_prompt += (
+                f"\n\nIMPORTANT — Your previous output failed quality checks. "
+                f"Rewrite and fix these specific issues:\n{fix_lines}"
+            )
+
+    return content, result
+
+
 def _extract_key_material(client, transcript: str, topic: str, focus: str, video_title: str) -> str:
     """Step 1: Use Haiku to cheaply extract only the relevant parts of a long transcript."""
     extract_prompt = "Extract the most important quotes, stories, numbers, and insights"
@@ -721,6 +758,174 @@ Write a quote tweet reply. Output ONLY the finished reply, nothing else."""
     )
 
     return response.content[0].text
+
+
+def generate_auto(
+    style_name: str,
+    content_type: str = "insights",
+    count: int = 10,
+    model: str | None = None,
+    additional_instructions: str = "",
+    mine_new: int = 5,
+    on_progress=None,
+) -> list[dict]:
+    """Auto-generate posts from the transcript library — no manual input.
+
+    1. Pulls unused ideas (already extracted from past transcripts).
+    2. If not enough, mines new transcripts for ideas.
+    3. Diversifies across different video sources.
+    4. Generates each post through the quality gate.
+
+    Args:
+        count: Target number of posts to produce.
+        mine_new: How many unmined transcripts to process if we need more ideas.
+        on_progress: Optional callback(step: str, current: int, total: int).
+
+    Returns:
+        List of dicts: {"content", "score", "issues", "topic", "video_title", "file_path"}
+    """
+    from .knowledge_base import (
+        get_unmined_transcripts,
+        get_transcript_text,
+        get_unused_ideas,
+        mark_idea_used,
+        save_ideas,
+        save_post,
+    )
+    from .style_manager import build_style_prompt
+
+    client = _get_anthropic_client()
+    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+    ideas = get_unused_ideas(limit=count * 3)
+
+    if len(ideas) < count:
+        unmined = get_unmined_transcripts(limit=mine_new)
+        for t in unmined:
+            if on_progress:
+                on_progress("mining", 0, 0)
+            text = get_transcript_text(t["video_id"])
+            if not text:
+                continue
+            new_ideas = extract_ideas(text, t["video_title"], num_ideas=3)
+            save_ideas(t["video_id"], new_ideas)
+            for idea in new_ideas:
+                idea["video_id"] = t["video_id"]
+                idea["video_title"] = t["video_title"]
+            ideas.extend(new_ideas)
+            if len(ideas) >= count * 2:
+                break
+
+    # Diversify: round-robin across different videos
+    by_video: dict[str, list] = {}
+    for idea in ideas:
+        vid = idea.get("video_id", "unknown")
+        by_video.setdefault(vid, []).append(idea)
+
+    selected = []
+    while len(selected) < count * 2 and by_video:
+        for vid in list(by_video.keys()):
+            if len(selected) >= count * 2:
+                break
+            if by_video[vid]:
+                selected.append(by_video[vid].pop(0))
+            if not by_video[vid]:
+                del by_video[vid]
+
+    # Generate posts with quality gate
+    style_prompt = build_style_prompt(style_name)
+    system_prompt = _build_system_prompt(style_prompt, content_type, style_name)
+    _ensure_content_dir()
+
+    results = []
+    attempted = 0
+
+    for idea in selected:
+        if len(results) >= count:
+            break
+        attempted += 1
+
+        title = idea.get("title", "untitled")
+        angle = idea.get("angle", "")
+        key_material = idea.get("key_material", "")
+        video_title = idea.get("video_title", "")
+        video_id = idea.get("video_id", "")
+
+        if on_progress:
+            on_progress("generating", len(results) + 1, count)
+
+        library_context = _get_library_context(
+            client, title, angle, exclude_video_id=video_id
+        )
+        source_material = key_material
+        if library_context:
+            source_material = key_material + "\n" + library_context
+
+        user_prompt = _build_user_prompt(
+            transcript=source_material,
+            topic=title,
+            focus=angle,
+            additional_instructions=additional_instructions,
+            video_title=video_title,
+        )
+
+        content, quality = _generate_with_quality_gate(
+            client, model, system_prompt, user_prompt, content_type
+        )
+
+        # Save to file
+        slug = _slugify(title)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = f"{timestamp}_auto_{slug}"
+        txt_path = CONTENT_DIR / f"{base}.txt"
+        txt_path.write_text(content)
+
+        meta = {
+            "style": style_name,
+            "content_type": content_type,
+            "topic": title,
+            "focus": angle,
+            "video_title": video_title,
+            "video_id": video_id,
+            "quality_score": quality["score"],
+            "quality_passed": quality["passed"],
+            "generated_at": datetime.now().isoformat(),
+        }
+        meta_path = CONTENT_DIR / f"{base}.meta.json"
+        meta_path.write_text(json.dumps(meta, indent=2))
+
+        try:
+            save_post(
+                style=style_name,
+                content=content,
+                content_type=content_type,
+                topic=title,
+                focus=angle,
+                video_id=video_id,
+                video_title=video_title,
+                command="auto",
+            )
+        except Exception:
+            pass
+
+        # Mark the idea as used if it has an id
+        if idea.get("id"):
+            try:
+                mark_idea_used(idea["id"])
+            except Exception:
+                pass
+
+        results.append({
+            "content": content,
+            "score": quality["score"],
+            "passed": quality["passed"],
+            "issues": quality["issues"],
+            "topic": title,
+            "video_title": video_title,
+            "file_path": txt_path,
+        })
+
+    return results
 
 
 def generate_and_save(
