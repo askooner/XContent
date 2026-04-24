@@ -232,15 +232,26 @@ def get_video_details(video_id: str) -> dict:
 # ── Transcript Fetching ─────────────────────────────────────────────
 
 
-def list_channel_videos(channel_input: str, max_results: int = 200) -> list[dict]:
-    """List all videos from a YouTube channel.
+def _parse_duration(iso_duration: str) -> int:
+    """Parse ISO 8601 duration (PT1H2M3S) to total seconds."""
+    import re
+    m = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", iso_duration)
+    if not m:
+        return 0
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2) or 0)
+    seconds = int(m.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
 
-    Uses the channel's uploads playlist to enumerate videos efficiently.
-    Costs ~1 API unit per 50 videos listed.
+
+def list_channel_videos(channel_input: str, max_results: int = 200,
+                        min_duration: int = 120) -> list[dict]:
+    """List long-form videos from a YouTube channel (filters out Shorts).
 
     Args:
         channel_input: Channel URL, @handle, channel ID, or saved channel name.
         max_results: Max videos to return.
+        min_duration: Minimum video duration in seconds (default 120 = 2 min).
 
     Returns:
         List of {video_id, title, channel, published} dicts.
@@ -256,14 +267,16 @@ def list_channel_videos(channel_input: str, max_results: int = 200) -> list[dict
     uploads_playlist = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
     channel_name = items[0]["snippet"]["title"]
 
-    videos = []
+    # Fetch more than needed since we'll filter out Shorts
+    fetch_limit = max_results * 3
+    raw_videos = []
     page_token = None
 
-    while len(videos) < max_results:
+    while len(raw_videos) < fetch_limit:
         params = {
             "part": "snippet",
             "playlistId": uploads_playlist,
-            "maxResults": min(50, max_results - len(videos)),
+            "maxResults": min(50, fetch_limit - len(raw_videos)),
         }
         if page_token:
             params["pageToken"] = page_token
@@ -274,7 +287,7 @@ def list_channel_videos(channel_input: str, max_results: int = 200) -> list[dict
             snippet = item["snippet"]
             vid = snippet.get("resourceId", {}).get("videoId", "")
             if vid:
-                videos.append({
+                raw_videos.append({
                     "video_id": vid,
                     "title": snippet.get("title", ""),
                     "channel": channel_name,
@@ -283,6 +296,29 @@ def list_channel_videos(channel_input: str, max_results: int = 200) -> list[dict
 
         page_token = resp.get("nextPageToken")
         if not page_token:
+            break
+
+    # Filter out Shorts by checking video duration (batch query, 50 at a time)
+    videos = []
+    for i in range(0, len(raw_videos), 50):
+        batch = raw_videos[i:i + 50]
+        ids = ",".join(v["video_id"] for v in batch)
+        details = youtube.videos().list(part="contentDetails", id=ids).execute()
+
+        duration_map = {}
+        for item in details.get("items", []):
+            duration_map[item["id"]] = _parse_duration(
+                item["contentDetails"].get("duration", "PT0S")
+            )
+
+        for v in batch:
+            dur = duration_map.get(v["video_id"], 0)
+            if dur >= min_duration:
+                videos.append(v)
+                if len(videos) >= max_results:
+                    break
+
+        if len(videos) >= max_results:
             break
 
     return videos
