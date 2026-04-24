@@ -319,7 +319,15 @@ def search(query, channel_id, max_results):
 @click.option("--timestamps", "-t", is_flag=True, help="Include timestamps")
 def transcript(video_id, save, timestamps):
     """Fetch the transcript for a YouTube video."""
+    import re
+
     from .source_manager import get_transcript, get_transcript_with_timestamps
+
+    # Extract video ID from full URL if given
+    if "youtube.com" in video_id or "youtu.be" in video_id:
+        m = re.search(r"(?:v=|youtu\.be/)([\w-]{11})", video_id)
+        if m:
+            video_id = m.group(1)
 
     try:
         with console.status("Fetching transcript..."):
@@ -1103,8 +1111,15 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
     skipped = 0
     for i, v in enumerate(new_videos, 1):
         try:
-            transcript = ytt_api.fetch(v["video_id"], languages=["en"])
+            # Try English first, then fall back to any available language
+            try:
+                transcript = ytt_api.fetch(v["video_id"], languages=["en"])
+            except Exception:
+                transcript = ytt_api.fetch(v["video_id"])
             text = " ".join(entry.text for entry in transcript.snippets)
+            if len(text.strip()) < 100:
+                skipped += 1
+                continue
             save_transcript(v["video_id"], v["title"], text, v["channel"])
             success += 1
         except Exception:
