@@ -245,13 +245,13 @@ def _parse_duration(iso_duration: str) -> int:
 
 
 def list_channel_videos(channel_input: str, max_results: int = 200,
-                        min_duration: int = 120) -> list[dict]:
-    """List long-form videos from a YouTube channel (filters out Shorts).
+                        min_duration: int = 600) -> list[dict]:
+    """List long-form videos from a YouTube channel (filters out Shorts/clips).
 
     Args:
         channel_input: Channel URL, @handle, channel ID, or saved channel name.
         max_results: Max videos to return.
-        min_duration: Minimum video duration in seconds (default 120 = 2 min).
+        min_duration: Minimum video duration in seconds (default 600 = 10 min).
 
     Returns:
         List of {video_id, title, channel, published} dicts.
@@ -345,10 +345,91 @@ def _get_ytt_api():
     return YouTubeTranscriptApi()
 
 
+def _fetch_transcript_ytdlp(video_id: str) -> str | None:
+    """Fallback: fetch transcript using yt-dlp (better at bypassing YouTube blocks)."""
+    try:
+        import yt_dlp
+    except ImportError:
+        return None
+
+    subtitles_data = {}
+
+    def _sub_hook(d):
+        nonlocal subtitles_data
+        subtitles_data = d
+
+    ydl_opts = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["en"],
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if cookie_path.exists():
+        ydl_opts["cookiefile"] = str(cookie_path)
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={video_id}", download=False
+            )
+
+        # Try manual captions first, then auto-generated
+        subs = info.get("subtitles", {})
+        auto_subs = info.get("automatic_captions", {})
+
+        sub_list = subs.get("en", []) or auto_subs.get("en", [])
+        if not sub_list:
+            return None
+
+        # Pick json3 or vtt format
+        sub_url = None
+        for fmt in sub_list:
+            if fmt.get("ext") in ("json3", "vtt", "srv1"):
+                sub_url = fmt.get("url")
+                break
+        if not sub_url and sub_list:
+            sub_url = sub_list[0].get("url")
+
+        if not sub_url:
+            return None
+
+        import requests as _req
+        resp = _req.get(sub_url, timeout=30)
+        resp.raise_for_status()
+        raw = resp.text
+
+        # Strip VTT/SRT formatting to plain text
+        import re
+        lines = []
+        for line in raw.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if re.match(r"^\d+$", line):
+                continue
+            if re.match(r"[\d:.,\->]+\s", line) or "-->" in line:
+                continue
+            if line.startswith("WEBVTT") or line.startswith("Kind:") or line.startswith("Language:"):
+                continue
+            # Strip HTML tags
+            line = re.sub(r"<[^>]+>", "", line)
+            if line:
+                lines.append(line)
+
+        return " ".join(lines) if lines else None
+    except Exception:
+        return None
+
+
 def get_transcript(video_id: str, languages: list[str] | None = None,
                    video_title: str = "", channel: str = "") -> str:
     """Fetch the transcript for a YouTube video.
 
+    Tries youtube-transcript-api first, falls back to yt-dlp.
     Auto-saves to the knowledge base so you never need to fetch it again.
 
     Args:

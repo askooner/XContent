@@ -1106,7 +1106,7 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
 
     console.print(f"  [cyan]{len(new_videos)} new videos ({len(videos) - len(new_videos)} already stored)[/cyan]")
 
-    from .source_manager import _get_ytt_api
+    from .source_manager import _fetch_transcript_ytdlp, _get_ytt_api
     ytt_api = _get_ytt_api()
 
     success = 0
@@ -1114,25 +1114,34 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
     first_error = None
     for i, v in enumerate(new_videos, 1):
         console.print(f"    [{i}/{len(new_videos)}] {v['title'][:55]}...", end=" ")
+        text = None
+
+        # Try youtube-transcript-api first
         try:
             try:
                 transcript = ytt_api.fetch(v["video_id"], languages=["en"])
             except Exception:
                 transcript = ytt_api.fetch(v["video_id"])
             text = " ".join(entry.text for entry in transcript.snippets)
-            if len(text.strip()) < 100:
-                console.print("[dim]too short, skipped[/dim]")
-                skipped += 1
-                continue
-            save_transcript(v["video_id"], v["title"], text, v["channel"])
-            console.print(f"[green]{len(text):,} chars[/green]")
-            success += 1
         except Exception as e:
-            err_msg = str(e).split("\n")[0][:80]
-            console.print(f"[dim]skipped ({err_msg})[/dim]")
             if not first_error:
                 first_error = str(e)
+
+        # Fallback to yt-dlp
+        used_ytdlp = False
+        if not text:
+            text = _fetch_transcript_ytdlp(v["video_id"])
+            if text:
+                used_ytdlp = True
+
+        if not text or len(text.strip()) < 100:
+            console.print("[dim]skipped (no transcript)[/dim]")
             skipped += 1
+        else:
+            save_transcript(v["video_id"], v["title"], text, v["channel"])
+            tag = " via yt-dlp" if used_ytdlp else ""
+            console.print(f"[green]{len(text):,} chars{tag}[/green]")
+            success += 1
 
         # Delay to avoid YouTube rate-limiting
         if i < len(new_videos):
