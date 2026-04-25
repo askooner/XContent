@@ -127,8 +127,8 @@ def get_published_drafts(limit: int = 50) -> list[dict]:
             if body:
                 print(f"[typefully] first item keys: {list(body[0].keys()) if isinstance(body[0], dict) else type(body[0])}")
 
-    # Handle both list and paginated response formats
-    items = body if isinstance(body, list) else body.get("data", body.get("drafts", []))
+    # Handle list, paginated, and results-based response formats
+    items = body if isinstance(body, list) else body.get("results", body.get("data", body.get("drafts", [])))
     if not isinstance(items, list):
         items = []
 
