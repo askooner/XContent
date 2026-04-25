@@ -373,13 +373,15 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
 
     cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
 
-    # Try multiple strategies: impersonation only, then cookies.txt, then Chrome
+    # Build list of auth strategies to try in order.
+    # Chrome cookies got furthest in testing (bypasses 429).
+    # web_creator player client avoids YouTube's JS challenge.
     cookie_strategies = [
-        [],  # impersonation alone (curl_cffi)
+        ["--cookies-from-browser", "chrome"],
     ]
     if cookie_path.exists():
         cookie_strategies.append(["--cookies", str(cookie_path)])
-    cookie_strategies.append(["--cookies-from-browser", "chrome"])
+    cookie_strategies.append([])  # no cookies, impersonation only
 
     for strategy in cookie_strategies:
       with tempfile.TemporaryDirectory() as tmpdir:
@@ -390,6 +392,8 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
             "--write-auto-sub",
             "--sub-lang", "en",
             "--sub-format", "vtt/srt/best",
+            "--ignore-errors",
+            "--extractor-args", "youtube:player_client=web_creator",
             "-o", f"{tmpdir}/sub",
             f"https://www.youtube.com/watch?v={video_id}",
         ] + strategy
