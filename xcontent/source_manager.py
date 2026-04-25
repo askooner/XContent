@@ -326,24 +326,30 @@ def list_channel_videos(channel_input: str, max_results: int = 200,
 
 
 def _get_ytt_api():
-    """Get a YouTubeTranscriptApi instance, with cookies if available."""
+    """Get a YouTubeTranscriptApi with browser-like session to avoid blocks."""
+    import requests as _req
     from youtube_transcript_api import YouTubeTranscriptApi
+
+    session = _req.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/125.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    session.cookies.set("CONSENT", "YES+cb", domain=".youtube.com")
 
     cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
     if cookie_path.exists():
         try:
             from http.cookiejar import MozillaCookieJar
-
-            import requests as _req
-
             jar = MozillaCookieJar(str(cookie_path))
             jar.load(ignore_discard=True, ignore_expires=True)
-            session = _req.Session()
-            session.cookies = jar
-            return YouTubeTranscriptApi(http_client=session)
+            session.cookies.update(jar)
         except Exception:
             pass
-    return YouTubeTranscriptApi()
+
+    return YouTubeTranscriptApi(http_client=session)
 
 
 def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
@@ -493,12 +499,13 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
     if debug:
         print(f"[innertube] key={api_key[:20]}... version={client_version}")
 
-    # Build the protobuf params for transcript request
-    # Structure: outer { inner { video_id: "..." } }
+    # Build protobuf params for transcript request
+    # Structure: 3 nested messages, each field 1: { { { video_id } } }
     vid_bytes = video_id.encode("utf-8")
-    inner = b"\x12" + bytes([len(vid_bytes)]) + vid_bytes
-    outer = b"\x0a" + bytes([len(inner)]) + inner
-    params = base64.b64encode(outer).decode("utf-8")
+    level1 = b"\x0a" + bytes([len(vid_bytes)]) + vid_bytes
+    level2 = b"\x0a" + bytes([len(level1)]) + level1
+    level3 = b"\x0a" + bytes([len(level2)]) + level2
+    params = base64.b64encode(level3).decode("utf-8")
 
     # Call the innertube get_transcript endpoint
     payload = {
