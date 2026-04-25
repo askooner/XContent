@@ -35,7 +35,7 @@ console = Console()
 
 @click.group()
 def cli():
-    """XContent — Your content creation machine for Found Remote."""
+    """XContent — Your content creation machine for Founder Mode."""
     if sys.version_info < (3, 10):
         console.print(
             f"[bold yellow]⚠ Running Python {sys.version_info.major}.{sys.version_info.minor}[/] — "
