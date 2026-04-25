@@ -110,6 +110,23 @@ def get_published_drafts(limit: int = 50) -> list[dict]:
 
     body = resp.json()
 
+    # Debug: show raw response structure
+    if os.getenv("XCONTENT_DEBUG"):
+        import json as _j
+        print(f"[typefully] status={resp.status_code}")
+        print(f"[typefully] body type={type(body).__name__}")
+        if isinstance(body, dict):
+            print(f"[typefully] keys={list(body.keys())}")
+            for k, v in body.items():
+                if isinstance(v, list):
+                    print(f"[typefully] {k}: {len(v)} items")
+                    if v:
+                        print(f"[typefully] first item keys: {list(v[0].keys()) if isinstance(v[0], dict) else type(v[0])}")
+        elif isinstance(body, list):
+            print(f"[typefully] list of {len(body)} items")
+            if body:
+                print(f"[typefully] first item keys: {list(body[0].keys()) if isinstance(body[0], dict) else type(body[0])}")
+
     # Handle both list and paginated response formats
     items = body if isinstance(body, list) else body.get("data", body.get("drafts", []))
     if not isinstance(items, list):
