@@ -487,7 +487,7 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
                  "--cookies", tmp_cookie_path,
                  "--skip-download", "--no-warnings",
                  "https://www.youtube.com/"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=15,
             )
             from http.cookiejar import MozillaCookieJar
             jar = MozillaCookieJar(tmp_cookie_path)
@@ -542,40 +542,46 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
             print("[direct] no caption tracks found")
         return None
 
-    # Find English captions (prefer manual over auto-generated)
-    caption_url = None
-    for track in captions_data:
-        if track.get("languageCode", "") == "en":
-            caption_url = track.get("baseUrl")
-            break
-    if not caption_url:
-        caption_url = captions_data[0].get("baseUrl")
+    # Collect English caption URLs — try auto-generated first (full transcript),
+    # then manual (often just chapter markers)
+    en_tracks = [t for t in captions_data if t.get("languageCode", "") == "en"]
+    if not en_tracks:
+        en_tracks = captions_data[:2]
 
-    if not caption_url:
-        return None
+    # Sort: auto-generated (kind=asr) first — they have the full transcript
+    en_tracks.sort(key=lambda t: 0 if t.get("kind") == "asr" else 1)
 
-    if debug:
-        kind = "auto" if "kind" in caption_url else "manual"
-        print(f"[direct] found {kind} captions, fetching...")
+    best_text = None
+    for track in en_tracks:
+        caption_url = track.get("baseUrl")
+        if not caption_url:
+            continue
 
-    # Step 4: Fetch the captions XML
-    try:
-        cap_resp = session.get(caption_url, timeout=30)
-    except Exception as e:
+        kind = "auto" if track.get("kind") == "asr" else "manual"
         if debug:
-            print(f"[direct] caption fetch failed: {e}")
-        return None
+            print(f"[direct] trying {kind} captions...")
 
-    # Step 5: Parse XML to plain text
-    try:
-        root = ET.fromstring(cap_resp.text)
-        texts = [elem.text for elem in root.iter("text") if elem.text]
-        text = " ".join(texts)
-    except ET.ParseError:
-        text = re.sub(r"<[^>]+>", " ", cap_resp.text)
-        text = " ".join(text.split())
+        try:
+            cap_resp = session.get(caption_url, timeout=30)
+        except Exception as e:
+            if debug:
+                print(f"[direct] caption fetch failed: {e}")
+            continue
 
-    return text if len(text) > 100 else None
+        try:
+            root = ET.fromstring(cap_resp.text)
+            texts = [elem.text for elem in root.iter("text") if elem.text]
+            text = " ".join(texts)
+        except ET.ParseError:
+            text = re.sub(r"<[^>]+>", " ", cap_resp.text)
+            text = " ".join(text.split())
+
+        if len(text) > 100 and (best_text is None or len(text) > len(best_text)):
+            best_text = text
+            if len(best_text) > 5000:
+                break  # good enough, no need to try more
+
+    return best_text
 
 
 def get_transcript(video_id: str, languages: list[str] | None = None,

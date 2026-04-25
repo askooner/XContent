@@ -1091,7 +1091,8 @@ def story(topic, style_name, model, instructions, max_sources, no_typefully, no_
 # ── Ingest Command (Bulk Import) ──────────────────────────────────
 
 
-def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple[int, int]:
+def _ingest_channel(channel_handle: str, channel_name: str, limit: int,
+                    min_chars: int = 1000) -> tuple[int, int]:
     """Ingest transcripts from a single channel. Returns (success, skipped) counts."""
     import time
 
@@ -1104,13 +1105,18 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
         console.print(f"  [red]Error listing channel: {e}[/red]")
         return 0, 0
 
-    new_videos = [v for v in videos if not get_transcript_text(v["video_id"])]
+    # Include videos that are missing OR have suspiciously short transcripts
+    new_videos = []
+    for v in videos:
+        existing = get_transcript_text(v["video_id"])
+        if not existing or len(existing) < min_chars:
+            new_videos.append(v)
 
     if not new_videos:
         console.print(f"  [dim]All {len(videos)} videos already stored.[/dim]")
         return 0, 0
 
-    console.print(f"  [cyan]{len(new_videos)} new videos ({len(videos) - len(new_videos)} already stored)[/cyan]")
+    console.print(f"  [cyan]{len(new_videos)} new/short videos ({len(videos) - len(new_videos)} already stored)[/cyan]")
 
     from .source_manager import _fetch_transcript_direct, _fetch_transcript_ytdlp, _get_ytt_api
 
