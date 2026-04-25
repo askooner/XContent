@@ -797,24 +797,18 @@ def generate_auto(
     client = _get_anthropic_client()
     model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
-    ideas = get_unused_ideas(limit=count * 3)
+    # Always mine new transcripts first to ensure diversity across sources
+    unmined = get_unmined_transcripts(limit=mine_new)
+    for t in unmined:
+        if on_progress:
+            on_progress("mining", 0, 0)
+        text = get_transcript_text(t["video_id"])
+        if not text:
+            continue
+        new_ideas = extract_ideas(text, t["video_title"], num_ideas=3)
+        save_ideas(t["video_id"], new_ideas)
 
-    if len(ideas) < count:
-        unmined = get_unmined_transcripts(limit=mine_new)
-        for t in unmined:
-            if on_progress:
-                on_progress("mining", 0, 0)
-            text = get_transcript_text(t["video_id"])
-            if not text:
-                continue
-            new_ideas = extract_ideas(text, t["video_title"], num_ideas=3)
-            save_ideas(t["video_id"], new_ideas)
-            for idea in new_ideas:
-                idea["video_id"] = t["video_id"]
-                idea["video_title"] = t["video_title"]
-            ideas.extend(new_ideas)
-            if len(ideas) >= count * 2:
-                break
+    ideas = get_unused_ideas(limit=count * 5)
 
     # Diversify: round-robin across different videos
     by_video: dict[str, list] = {}
