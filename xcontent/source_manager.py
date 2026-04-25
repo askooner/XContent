@@ -347,83 +347,75 @@ def _get_ytt_api():
 
 
 def _fetch_transcript_ytdlp(video_id: str) -> str | None:
-    """Fallback: fetch transcript using yt-dlp (better at bypassing YouTube blocks)."""
-    try:
-        import yt_dlp
-    except ImportError:
+    """Fallback: fetch transcript using yt-dlp CLI (bypasses YouTube blocks).
+
+    Uses yt-dlp as a subprocess so it works with Homebrew installs that
+    bundle their own Python, avoiding Python 3.9 compatibility issues.
+    """
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("yt-dlp"):
         return None
 
-    subtitles_data = {}
-
-    def _sub_hook(d):
-        nonlocal subtitles_data
-        subtitles_data = d
-
-    ydl_opts = {
-        "skip_download": True,
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": ["en"],
-        "quiet": True,
-        "no_warnings": True,
-    }
-
     cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
-    if cookie_path.exists():
-        ydl_opts["cookiefile"] = str(cookie_path)
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(
-                f"https://www.youtube.com/watch?v={video_id}", download=False
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cmd = [
+            "yt-dlp",
+            "--skip-download",
+            "--write-sub",
+            "--write-auto-sub",
+            "--sub-lang", "en",
+            "--sub-format", "vtt/srt/best",
+            "-o", f"{tmpdir}/sub",
+            f"https://www.youtube.com/watch?v={video_id}",
+        ]
+        if cookie_path.exists():
+            cmd.extend(["--cookies", str(cookie_path)])
+
+        try:
+            subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120
             )
-
-        # Try manual captions first, then auto-generated
-        subs = info.get("subtitles", {})
-        auto_subs = info.get("automatic_captions", {})
-
-        sub_list = subs.get("en", []) or auto_subs.get("en", [])
-        if not sub_list:
+        except Exception:
             return None
 
-        # Pick json3 or vtt format
-        sub_url = None
-        for fmt in sub_list:
-            if fmt.get("ext") in ("json3", "vtt", "srv1"):
-                sub_url = fmt.get("url")
+        # Find the subtitle file
+        sub_file = None
+        for fname in os.listdir(tmpdir):
+            if fname.endswith((".vtt", ".srt", ".srv1")):
+                sub_file = os.path.join(tmpdir, fname)
                 break
-        if not sub_url and sub_list:
-            sub_url = sub_list[0].get("url")
 
-        if not sub_url:
+        if not sub_file:
             return None
 
-        import requests as _req
-        resp = _req.get(sub_url, timeout=30)
-        resp.raise_for_status()
-        raw = resp.text
+        with open(sub_file) as f:
+            raw = f.read()
 
         # Strip VTT/SRT formatting to plain text
-        import re
         lines = []
+        seen = set()
         for line in raw.split("\n"):
             line = line.strip()
             if not line:
                 continue
             if re.match(r"^\d+$", line):
                 continue
-            if re.match(r"[\d:.,\->]+\s", line) or "-->" in line:
+            if "-->" in line:
                 continue
-            if line.startswith("WEBVTT") or line.startswith("Kind:") or line.startswith("Language:"):
+            if line.startswith(("WEBVTT", "Kind:", "Language:", "NOTE")):
                 continue
-            # Strip HTML tags
             line = re.sub(r"<[^>]+>", "", line)
-            if line:
+            if line and line not in seen:
+                seen.add(line)
                 lines.append(line)
 
-        return " ".join(lines) if lines else None
-    except Exception:
-        return None
+        text = " ".join(lines)
+        return text if len(text) > 100 else None
 
 
 def get_transcript(video_id: str, languages: list[str] | None = None,
