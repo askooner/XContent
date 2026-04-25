@@ -1136,7 +1136,8 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
         # Fallback to yt-dlp
         used_ytdlp = False
         if not text:
-            text = _fetch_transcript_ytdlp(v["video_id"])
+            console.print("[dim]trying yt-dlp...[/dim]", end=" ")
+            text = _fetch_transcript_ytdlp(v["video_id"], debug=True)
             if text:
                 used_ytdlp = True
 

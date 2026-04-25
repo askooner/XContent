@@ -346,7 +346,7 @@ def _get_ytt_api():
     return YouTubeTranscriptApi()
 
 
-def _fetch_transcript_ytdlp(video_id: str) -> str | None:
+def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
     """Fallback: fetch transcript using yt-dlp CLI (bypasses YouTube blocks).
 
     Uses yt-dlp as a subprocess so it works with Homebrew installs that
@@ -359,6 +359,8 @@ def _fetch_transcript_ytdlp(video_id: str) -> str | None:
 
     ytdlp = shutil.which("yt-dlp") or shutil.which("yt-dlp", path="/opt/homebrew/bin:/usr/local/bin")
     if not ytdlp:
+        if debug:
+            print("[yt-dlp] not found in PATH or /opt/homebrew/bin")
         return None
 
     cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
@@ -378,18 +380,24 @@ def _fetch_transcript_ytdlp(video_id: str) -> str | None:
             cmd.extend(["--cookies", str(cookie_path)])
 
         try:
-            subprocess.run(
+            result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=120
             )
-        except Exception:
+            if debug:
+                print(f"[yt-dlp] exit code: {result.returncode}")
+                if result.stderr:
+                    for line in result.stderr.strip().split("\n")[-5:]:
+                        print(f"[yt-dlp] {line}")
+        except Exception as e:
+            if debug:
+                print(f"[yt-dlp] subprocess error: {e}")
             return None
 
         # Find the subtitle file
-        sub_file = None
-        for fname in os.listdir(tmpdir):
-            if fname.endswith((".vtt", ".srt", ".srv1")):
-                sub_file = os.path.join(tmpdir, fname)
-                break
+        sub_files = [f for f in os.listdir(tmpdir) if f.endswith((".vtt", ".srt", ".srv1"))]
+        if debug:
+            print(f"[yt-dlp] files in tmpdir: {os.listdir(tmpdir)}")
+        sub_file = os.path.join(tmpdir, sub_files[0]) if sub_files else None
 
         if not sub_file:
             return None
@@ -445,15 +453,19 @@ def get_transcript(video_id: str, languages: list[str] | None = None,
     if languages is None:
         languages = ["en"]
 
-    ytt_api = _get_ytt_api()
-    transcript = ytt_api.fetch(video_id, languages=languages)
+    text = None
+    try:
+        ytt_api = _get_ytt_api()
+        transcript = ytt_api.fetch(video_id, languages=languages)
+        text = " ".join(entry.text for entry in transcript.snippets)
+    except Exception:
+        pass
 
-    # Join all segments into a readable string
-    lines = []
-    for entry in transcript.snippets:
-        lines.append(entry.text)
+    if not text:
+        text = _fetch_transcript_ytdlp(video_id)
 
-    text = " ".join(lines)
+    if not text:
+        raise RuntimeError(f"Could not fetch transcript for {video_id}")
 
     # Auto-save to knowledge base
     save_transcript(video_id, video_title or video_id, text, channel)
