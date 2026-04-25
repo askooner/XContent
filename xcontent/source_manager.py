@@ -357,13 +357,19 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
     import subprocess
     import tempfile
 
-    ytdlp = shutil.which("yt-dlp") or shutil.which("yt-dlp", path="/opt/homebrew/bin:/usr/local/bin")
+    # Prefer venv yt-dlp (shares Python env with curl_cffi for impersonation)
+    import sys
+    venv_ytdlp = os.path.join(os.path.dirname(sys.executable), "yt-dlp")
+    if os.path.isfile(venv_ytdlp):
+        ytdlp = venv_ytdlp
+    else:
+        ytdlp = shutil.which("yt-dlp") or shutil.which("yt-dlp", path="/opt/homebrew/bin:/usr/local/bin")
     if not ytdlp:
         if debug:
-            print("[yt-dlp] not found in PATH or /opt/homebrew/bin")
+            print("[yt-dlp] not found in PATH, venv, or /opt/homebrew/bin")
         return None
-
-    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if debug:
+        print(f"[yt-dlp] using: {ytdlp}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cmd = [
@@ -373,14 +379,10 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
             "--write-auto-sub",
             "--sub-lang", "en",
             "--sub-format", "vtt/srt/best",
+            "--cookies-from-browser", "safari",
             "-o", f"{tmpdir}/sub",
             f"https://www.youtube.com/watch?v={video_id}",
         ]
-        if cookie_path.exists():
-            cmd.extend(["--cookies", str(cookie_path)])
-        else:
-            # Pull cookies from Safari so YouTube sees us as a real logged-in user
-            cmd.extend(["--cookies-from-browser", "safari"])
 
         try:
             result = subprocess.run(
