@@ -450,15 +450,14 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
 
 
 def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
-    """Fetch transcript by scraping the YouTube page directly with Chrome cookies.
+    """Fetch transcript via YouTube's innertube API.
 
-    Bypasses both youtube-transcript-api and yt-dlp entirely.
-    Extracts caption track URLs from the page's player response JSON,
-    then fetches the raw caption XML.
+    Uses the same POST-based API that YouTube's web player uses internally.
+    This avoids the GET caption URLs which get rate-limited with 429 errors.
     """
-    import re
+    import base64
     import html as html_mod
-    import xml.etree.ElementTree as ET
+    import re
 
     import requests
 
@@ -468,96 +467,100 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/125.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
     })
-    # Bypass YouTube consent page
     session.cookies.set("CONSENT", "YES+cb", domain=".youtube.com")
 
-    # Fetch the YouTube watch page
-    url = f"https://www.youtube.com/watch?v={video_id}"
+    # First fetch the page to get a valid innertube API key and client version
     try:
-        resp = session.get(url, timeout=30)
+        page = session.get(
+            f"https://www.youtube.com/watch?v={video_id}", timeout=30
+        )
         if debug:
-            print(f"[direct] page status={resp.status_code}, {len(resp.text)} bytes")
+            print(f"[innertube] page: {page.status_code}")
     except Exception as e:
         if debug:
-            print(f"[direct] page fetch failed: {e}")
+            print(f"[innertube] page failed: {e}")
+        return None
+
+    # Extract innertube API key from page
+    key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', page.text)
+    api_key = key_match.group(1) if key_match else "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+
+    ver_match = re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', page.text)
+    client_version = ver_match.group(1) if ver_match else "2.20250420.01.00"
+
+    if debug:
+        print(f"[innertube] key={api_key[:20]}... version={client_version}")
+
+    # Build the protobuf params for transcript request
+    # Structure: outer { inner { video_id: "..." } }
+    vid_bytes = video_id.encode("utf-8")
+    inner = b"\x12" + bytes([len(vid_bytes)]) + vid_bytes
+    outer = b"\x0a" + bytes([len(inner)]) + inner
+    params = base64.b64encode(outer).decode("utf-8")
+
+    # Call the innertube get_transcript endpoint
+    payload = {
+        "context": {
+            "client": {
+                "hl": "en",
+                "gl": "US",
+                "clientName": "WEB",
+                "clientVersion": client_version,
+            }
+        },
+        "params": params,
+    }
+
+    try:
+        resp = session.post(
+            f"https://www.youtube.com/youtubei/v1/get_transcript?key={api_key}",
+            json=payload,
+            timeout=30,
+        )
+        if debug:
+            print(f"[innertube] transcript API: {resp.status_code}")
+    except Exception as e:
+        if debug:
+            print(f"[innertube] API call failed: {e}")
         return None
 
     if resp.status_code != 200:
-        return None
-
-    # Extract captions from ytInitialPlayerResponse
-    match = re.search(r"ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;", resp.text)
-    if not match:
         if debug:
-            print("[direct] no ytInitialPlayerResponse found in page")
+            print(f"[innertube] error response: {resp.text[:300]}")
         return None
 
+    # Parse the transcript from the innertube response
+    data = resp.json()
     try:
-        player = json.loads(match.group(1))
-    except json.JSONDecodeError:
+        body = (
+            data["actions"][0]["updateEngagementPanelAction"]
+            ["content"]["transcriptRenderer"]["body"]
+            ["transcriptBodyRenderer"]["cueGroups"]
+        )
+    except (KeyError, IndexError):
         if debug:
-            print("[direct] failed to parse player response JSON")
+            # Try to find transcript segments in alternative response structures
+            print(f"[innertube] response keys: {list(data.keys())}")
+            if "actions" in data:
+                print(f"[innertube] actions[0] keys: {list(data['actions'][0].keys()) if data['actions'] else 'empty'}")
         return None
 
-    captions_data = (
-        player.get("captions", {})
-        .get("playerCaptionsTracklistRenderer", {})
-        .get("captionTracks", [])
-    )
+    segments = []
+    for group in body:
+        try:
+            cue = group["transcriptCueGroupRenderer"]["cues"][0]["transcriptCueRenderer"]
+            text = cue["cue"]["simpleText"]
+            segments.append(html_mod.unescape(text))
+        except (KeyError, IndexError):
+            continue
+
+    text = " ".join(segments)
     if debug:
-        for t in captions_data:
-            print(f"[direct] track: lang={t.get('languageCode')} kind={t.get('kind', 'manual')} name={t.get('name', {}).get('simpleText', '')}")
-    if not captions_data:
-        if debug:
-            print("[direct] no caption tracks found")
-        return None
+        print(f"[innertube] got {len(segments)} segments, {len(text)} chars")
 
-    # Try auto-generated (kind=asr) first — full transcript.
-    # Manual captions are often just chapter markers.
-    en_tracks = [t for t in captions_data if t.get("languageCode", "") == "en"]
-    if not en_tracks:
-        en_tracks = captions_data[:2]
-    en_tracks.sort(key=lambda t: 0 if t.get("kind") == "asr" else 1)
-
-    best_text = None
-    for track in en_tracks:
-        caption_url = track.get("baseUrl")
-        if not caption_url:
-            continue
-
-        kind = "auto" if track.get("kind") == "asr" else "manual"
-        if debug:
-            print(f"[direct] fetching {kind} captions...")
-
-        try:
-            cap_resp = session.get(caption_url, timeout=30)
-        except Exception as e:
-            if debug:
-                print(f"[direct]   fetch failed: {e}")
-            continue
-
-        if debug:
-            print(f"[direct]   response: {cap_resp.status_code}, {len(cap_resp.text)} bytes")
-            print(f"[direct]   first 200: {cap_resp.text[:200]}")
-
-        try:
-            root = ET.fromstring(cap_resp.text)
-            texts = [html_mod.unescape(elem.text) for elem in root.iter("text") if elem.text]
-            text = " ".join(texts)
-        except ET.ParseError:
-            text = re.sub(r"<[^>]+>", " ", cap_resp.text)
-            text = html_mod.unescape(" ".join(text.split()))
-
-        if debug:
-            print(f"[direct]   parsed: {len(text)} chars")
-
-        if len(text) > 100 and (best_text is None or len(text) > len(best_text)):
-            best_text = text
-            if len(best_text) > 5000:
-                break
-
-    return best_text
+    return text if len(text) > 100 else None
 
 
 def get_transcript(video_id: str, languages: list[str] | None = None,
