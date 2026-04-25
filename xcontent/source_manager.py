@@ -378,6 +378,9 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
         ]
         if cookie_path.exists():
             cmd.extend(["--cookies", str(cookie_path)])
+        else:
+            # Pull cookies from Safari so YouTube sees us as a real logged-in user
+            cmd.extend(["--cookies-from-browser", "safari"])
 
         try:
             result = subprocess.run(
