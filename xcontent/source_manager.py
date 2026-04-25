@@ -457,17 +457,10 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
     then fetches the raw caption XML.
     """
     import re
-    import subprocess
-    import tempfile
+    import html as html_mod
     import xml.etree.ElementTree as ET
 
     import requests
-
-    # Step 1: Get Chrome cookies via yt-dlp (it can extract them reliably)
-    import shutil
-    import sys
-    venv_ytdlp = os.path.join(os.path.dirname(sys.executable), "yt-dlp")
-    ytdlp = venv_ytdlp if os.path.isfile(venv_ytdlp) else shutil.which("yt-dlp")
 
     session = requests.Session()
     session.headers.update({
@@ -476,40 +469,15 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
                       "Chrome/125.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
     })
+    # Bypass YouTube consent page
+    session.cookies.set("CONSENT", "YES+cb", domain=".youtube.com")
 
-    # Export Chrome cookies to a temp file, then load them
-    if ytdlp:
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as tmp:
-                tmp_cookie_path = tmp.name
-            subprocess.run(
-                [ytdlp, "--cookies-from-browser", "chrome",
-                 "--cookies", tmp_cookie_path,
-                 "--skip-download", "--no-warnings",
-                 "https://www.youtube.com/"],
-                capture_output=True, text=True, timeout=15,
-            )
-            from http.cookiejar import MozillaCookieJar
-            jar = MozillaCookieJar(tmp_cookie_path)
-            jar.load(ignore_discard=True, ignore_expires=True)
-            session.cookies = jar
-            if debug:
-                print(f"[direct] loaded {len(jar)} cookies from Chrome")
-            os.unlink(tmp_cookie_path)
-        except Exception as e:
-            if debug:
-                print(f"[direct] cookie export failed: {e}")
-            try:
-                os.unlink(tmp_cookie_path)
-            except Exception:
-                pass
-
-    # Step 2: Fetch the YouTube watch page
+    # Fetch the YouTube watch page
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         resp = session.get(url, timeout=30)
         if debug:
-            print(f"[direct] page fetch: {resp.status_code}, {len(resp.text)} bytes")
+            print(f"[direct] page status={resp.status_code}, {len(resp.text)} bytes")
     except Exception as e:
         if debug:
             print(f"[direct] page fetch failed: {e}")
@@ -518,7 +486,7 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
     if resp.status_code != 200:
         return None
 
-    # Step 3: Extract captions from ytInitialPlayerResponse
+    # Extract captions from ytInitialPlayerResponse
     match = re.search(r"ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;", resp.text)
     if not match:
         if debug:
@@ -537,18 +505,19 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
         .get("playerCaptionsTracklistRenderer", {})
         .get("captionTracks", [])
     )
+    if debug:
+        for t in captions_data:
+            print(f"[direct] track: lang={t.get('languageCode')} kind={t.get('kind', 'manual')} name={t.get('name', {}).get('simpleText', '')}")
     if not captions_data:
         if debug:
             print("[direct] no caption tracks found")
         return None
 
-    # Collect English caption URLs — try auto-generated first (full transcript),
-    # then manual (often just chapter markers)
+    # Try auto-generated (kind=asr) first — full transcript.
+    # Manual captions are often just chapter markers.
     en_tracks = [t for t in captions_data if t.get("languageCode", "") == "en"]
     if not en_tracks:
         en_tracks = captions_data[:2]
-
-    # Sort: auto-generated (kind=asr) first — they have the full transcript
     en_tracks.sort(key=lambda t: 0 if t.get("kind") == "asr" else 1)
 
     best_text = None
@@ -559,27 +528,34 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
 
         kind = "auto" if track.get("kind") == "asr" else "manual"
         if debug:
-            print(f"[direct] trying {kind} captions...")
+            print(f"[direct] fetching {kind} captions...")
 
         try:
             cap_resp = session.get(caption_url, timeout=30)
         except Exception as e:
             if debug:
-                print(f"[direct] caption fetch failed: {e}")
+                print(f"[direct]   fetch failed: {e}")
             continue
+
+        if debug:
+            print(f"[direct]   response: {cap_resp.status_code}, {len(cap_resp.text)} bytes")
+            print(f"[direct]   first 200: {cap_resp.text[:200]}")
 
         try:
             root = ET.fromstring(cap_resp.text)
-            texts = [elem.text for elem in root.iter("text") if elem.text]
+            texts = [html_mod.unescape(elem.text) for elem in root.iter("text") if elem.text]
             text = " ".join(texts)
         except ET.ParseError:
             text = re.sub(r"<[^>]+>", " ", cap_resp.text)
-            text = " ".join(text.split())
+            text = html_mod.unescape(" ".join(text.split()))
+
+        if debug:
+            print(f"[direct]   parsed: {len(text)} chars")
 
         if len(text) > 100 and (best_text is None or len(text) > len(best_text)):
             best_text = text
             if len(best_text) > 5000:
-                break  # good enough, no need to try more
+                break
 
     return best_text
 
