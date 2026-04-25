@@ -1457,6 +1457,60 @@ def sync_edits(style_name, content_type, dry_run):
         console.print("[dim]These edits will be injected into future generation prompts automatically.[/dim]")
 
 
+@cli.command("learn-style")
+@click.argument("style_name")
+@click.option("--limit", "-n", default=200, help="Max posts to pull")
+def learn_style(style_name, limit):
+    """Pull all published posts from Typefully and add them as style examples.
+
+    \b
+    Your real posts are the best style guide. This imports every published
+    post as an example for the given style so future generations match
+    your actual voice.
+
+    \b
+    Usage:
+        xcontent learn-style insights
+    """
+    from .style_manager import load_style, save_style
+    from .typefully import get_published_drafts
+
+    try:
+        style = load_style(style_name)
+    except FileNotFoundError:
+        console.print(f"[red]Style '{style_name}' not found. Run: xcontent style list[/red]")
+        return
+
+    console.print(f"\n[bold]Pulling published posts from Typefully...[/bold]")
+    try:
+        posts = get_published_drafts(limit=limit)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    if not posts:
+        console.print("[yellow]No published posts found.[/yellow]")
+        return
+
+    console.print(f"[green]Found {len(posts)} published posts.[/green]\n")
+
+    existing_examples = style.get("examples", [])
+    existing_set = set(existing_examples)
+    added = 0
+    for post in posts:
+        text = post["text"].strip()
+        if text and text not in existing_set:
+            existing_examples.append(text)
+            existing_set.add(text)
+            added += 1
+
+    save_style(style_name, existing_examples, description=style.get("description", ""))
+
+    console.print(f"[bold green]Added {added} new examples to '{style_name}' style.[/bold green]")
+    console.print(f"Total examples: {len(existing_examples)}")
+    console.print(f"\n[dim]Future generations will learn from your actual writing voice.[/dim]")
+
+
 # ── Library Commands (Knowledge Base) ──────────────────────────────
 
 

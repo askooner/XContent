@@ -90,63 +90,48 @@ def push_drafts(posts: list[str]) -> list[dict]:
     return results
 
 
-def get_published_drafts(limit: int = 50) -> list[dict]:
-    """Fetch recently published drafts from Typefully.
+def get_published_drafts(limit: int = 200) -> list[dict]:
+    """Fetch all published drafts from Typefully, paginating through results.
 
     Returns list of dicts with at least {id, text, published_at}.
     """
     api_key = _get_api_key()
     social_set_id = _get_social_set_id()
+    headers = {"Authorization": f"Bearer {api_key}"}
+    url = f"https://api.typefully.com/v2/social-sets/{social_set_id}/drafts"
 
-    resp = requests.get(
-        f"https://api.typefully.com/v2/social-sets/{social_set_id}/drafts",
-        headers={"Authorization": f"Bearer {api_key}"},
-        params={"status": "published"},
-    )
+    all_items = []
+    offset = 0
+    page_size = 50
 
-    if resp.status_code in (401, 403):
-        raise RuntimeError(f"Typefully API error {resp.status_code}: {resp.text}")
-    resp.raise_for_status()
+    while len(all_items) < limit:
+        resp = requests.get(
+            url,
+            headers=headers,
+            params={"status": "published", "limit": page_size, "offset": offset},
+        )
 
-    body = resp.json()
+        if resp.status_code in (401, 403):
+            raise RuntimeError(f"Typefully API error {resp.status_code}: {resp.text}")
+        resp.raise_for_status()
 
-    # Debug: show raw response structure
-    if os.getenv("XCONTENT_DEBUG"):
-        import json as _j
-        print(f"[typefully] status={resp.status_code}")
-        print(f"[typefully] body type={type(body).__name__}")
-        if isinstance(body, dict):
-            print(f"[typefully] keys={list(body.keys())}")
-            for k, v in body.items():
-                if isinstance(v, list):
-                    print(f"[typefully] {k}: {len(v)} items")
-                    if v:
-                        print(f"[typefully] first item keys: {list(v[0].keys()) if isinstance(v[0], dict) else type(v[0])}")
-        elif isinstance(body, list):
-            print(f"[typefully] list of {len(body)} items")
-            if body:
-                print(f"[typefully] first item keys: {list(body[0].keys()) if isinstance(body[0], dict) else type(body[0])}")
+        body = resp.json()
+        items = body if isinstance(body, list) else body.get("results", body.get("data", body.get("drafts", [])))
+        if not isinstance(items, list) or not items:
+            break
 
-    # Handle list, paginated, and results-based response formats
-    items = body if isinstance(body, list) else body.get("results", body.get("data", body.get("drafts", [])))
-    if not isinstance(items, list):
-        items = []
+        all_items.extend(items)
+        offset += page_size
+
+        if isinstance(body, dict) and not body.get("next"):
+            break
 
     results = []
-    for item in items[:limit]:
+    for item in all_items[:limit]:
         draft_id = item.get("id", "")
         published_at = item.get("published_at", item.get("updated_at", ""))
 
-        # Extract the post text — try nested platforms.x.posts first, then fallback
-        text = ""
-        platforms = item.get("platforms", {})
-        x_data = platforms.get("x", {})
-        posts = x_data.get("posts", [])
-        if posts:
-            text = posts[0].get("text", "")
-
-        if not text:
-            text = item.get("preview", item.get("text", item.get("draft_title", "")))
+        text = item.get("preview", item.get("text", item.get("draft_title", "")))
 
         if text:
             results.append({
