@@ -1,12 +1,12 @@
 [
-  {"name": "Founders Podcast", "handle": "@founderspodcast1"},
-  {"name": "Dwarkesh Patel", "handle": "@DwarkeshPatel"},
-  {"name": "David Senra", "handle": "@DavidSenra"},
-  {"name": "All-In Podcast", "handle": "@allin"},
-  {"name": "Lex Fridman", "handle": "@lexfridman"},
-  {"name": "No Priors Podcast", "handle": "@NoPriorsPodcast"},
-  {"name": "Stripe", "handle": "@stripe"},
-  {"name": "a16z", "handle": "@a16z"},
-  {"name": "Relentless", "handle": "@ti_morse"},
-  {"name": "Diary of a CEO", "handle": "@TheDiaryOfACEO"}
+  {"name": "Founders Podcast", "handle": "@founderspodcast1", "focus": "core"},
+  {"name": "Dwarkesh Patel", "handle": "@DwarkeshPatel", "focus": "core"},
+  {"name": "David Senra", "handle": "@DavidSenra", "focus": "core"},
+  {"name": "All-In Podcast", "handle": "@allin", "focus": "core"},
+  {"name": "Lex Fridman", "handle": "@lexfridman", "focus": "mixed"},
+  {"name": "No Priors Podcast", "handle": "@NoPriorsPodcast", "focus": "core"},
+  {"name": "Stripe", "handle": "@stripe", "focus": "core"},
+  {"name": "a16z", "handle": "@a16z", "focus": "core"},
+  {"name": "Relentless", "handle": "@ti_morse", "focus": "core"},
+  {"name": "Diary of a CEO", "handle": "@TheDiaryOfACEO", "focus": "mixed"}
 ]

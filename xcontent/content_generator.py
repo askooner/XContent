@@ -760,6 +760,46 @@ Write a quote tweet reply. Output ONLY the finished reply, nothing else."""
     return response.content[0].text
 
 
+_FOUNDER_KEYWORDS = {
+    "founder", "ceo", "startup", "company", "business", "entrepreneur",
+    "venture", "capital", "investor", "build", "scale", "growth", "revenue",
+    "product", "market", "strategy", "leadership", "management", "hire",
+    "culture", "innovation", "disruption", "acquisition", "ipo", "funding",
+    "valuation", "profit", "customer", "saas", "software", "tech",
+    "technology", "ai", "artificial intelligence", "machine learning",
+    "engineer", "silicon valley", "amazon", "apple", "google", "meta",
+    "microsoft", "tesla", "spacex", "stripe", "coinbase", "nvidia",
+    "manufacturing", "supply chain", "operations", "decision", "compete",
+    "moat", "monopoly", "network effect", "platform", "marketplace",
+}
+
+
+def _filter_on_topic(transcripts: list[dict]) -> list[dict]:
+    """Filter transcripts to founder/business/tech topics.
+
+    Core channels pass through. Mixed channels are filtered by title keywords.
+    """
+    channels_path = Path(__file__).resolve().parent.parent / "channels.json"
+    mixed_channels: set[str] = set()
+    if channels_path.exists():
+        import json as _json
+        for ch in _json.loads(channels_path.read_text()):
+            if ch.get("focus") == "mixed":
+                mixed_channels.add(ch["name"])
+                mixed_channels.add(ch.get("handle", ""))
+
+    result = []
+    for t in transcripts:
+        channel = t.get("channel", "")
+        if channel not in mixed_channels:
+            result.append(t)
+            continue
+        title_lower = t.get("video_title", "").lower()
+        if any(kw in title_lower for kw in _FOUNDER_KEYWORDS):
+            result.append(t)
+    return result
+
+
 def generate_auto(
     style_name: str,
     content_type: str = "insights",
@@ -798,8 +838,8 @@ def generate_auto(
     model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
     # Always mine new transcripts first to ensure diversity across sources
-    unmined = get_unmined_transcripts(limit=mine_new)
-    for t in unmined:
+    unmined = get_unmined_transcripts(limit=mine_new * 3)
+    for t in _filter_on_topic(unmined)[:mine_new]:
         if on_progress:
             on_progress("mining", 0, 0)
         text = get_transcript_text(t["video_id"])
