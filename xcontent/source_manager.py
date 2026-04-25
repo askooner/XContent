@@ -357,14 +357,15 @@ def _fetch_transcript_ytdlp(video_id: str) -> str | None:
     import subprocess
     import tempfile
 
-    if not shutil.which("yt-dlp"):
+    ytdlp = shutil.which("yt-dlp") or shutil.which("yt-dlp", path="/opt/homebrew/bin:/usr/local/bin")
+    if not ytdlp:
         return None
 
     cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cmd = [
-            "yt-dlp",
+            ytdlp,
             "--skip-download",
             "--write-sub",
             "--write-auto-sub",

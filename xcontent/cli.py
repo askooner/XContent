@@ -36,7 +36,13 @@ console = Console()
 @click.group()
 def cli():
     """XContent — Your content creation machine for Found Remote."""
-    pass
+    if sys.version_info < (3, 10):
+        console.print(
+            f"[bold yellow]⚠ Running Python {sys.version_info.major}.{sys.version_info.minor}[/] — "
+            "YouTube fetching may fail due to SSL issues.\n"
+            "  Run with: [bold]python3.12 -m xcontent.cli[/] instead.",
+            highlight=False,
+        )
 
 
 # ── Style Commands ───────────────────────────────────────────────────
