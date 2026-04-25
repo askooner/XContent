@@ -458,10 +458,10 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
 def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
     """Fetch transcript via YouTube's innertube API.
 
-    Uses the same POST-based API that YouTube's web player uses internally.
-    This avoids the GET caption URLs which get rate-limited with 429 errors.
+    Extracts the transcript engagement panel params from the video page,
+    then calls get_transcript with those exact params. This avoids
+    guessing protobuf formats and bypasses caption URL rate limiting.
     """
-    import base64
     import html as html_mod
     import re
 
@@ -473,11 +473,10 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/125.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
-        "Content-Type": "application/json",
     })
     session.cookies.set("CONSENT", "YES+cb", domain=".youtube.com")
 
-    # First fetch the page to get a valid innertube API key and client version
+    # Fetch the video page
     try:
         page = session.get(
             f"https://www.youtube.com/watch?v={video_id}", timeout=30
@@ -489,23 +488,63 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
             print(f"[innertube] page failed: {e}")
         return None
 
-    # Extract innertube API key from page
+    if page.status_code != 200:
+        return None
+
+    # Extract innertube API key
     key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', page.text)
     api_key = key_match.group(1) if key_match else "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 
     ver_match = re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', page.text)
     client_version = ver_match.group(1) if ver_match else "2.20250420.01.00"
 
+    # Extract transcript params from the engagement panel in ytInitialData
+    # YouTube embeds the exact params we need in the page's initial data
+    params = None
+
+    # Method 1: Look for transcript engagement panel params
+    params_match = re.search(
+        r'"engagement-panel-searchable-transcript".*?"serializedShareEntity":"([^"]+)"',
+        page.text
+    )
+    if params_match:
+        params = params_match.group(1)
+        if debug:
+            print(f"[innertube] found panel params")
+
+    # Method 2: Look for showEngagementPanelEndpoint with transcript params
+    if not params:
+        params_match = re.search(
+            r'"showTranscriptEndpoint"\s*:\s*\{[^}]*"params"\s*:\s*"([^"]+)"',
+            page.text
+        )
+        if params_match:
+            params = params_match.group(1)
+            if debug:
+                print(f"[innertube] found transcript endpoint params")
+
+    # Method 3: Look for any get_transcript params in the page
+    if not params:
+        params_match = re.search(
+            r'get_transcript[^}]*"params"\s*:\s*"([^"]+)"',
+            page.text
+        )
+        if params_match:
+            params = params_match.group(1)
+            if debug:
+                print(f"[innertube] found get_transcript params")
+
+    # Method 4: Build params from video ID (flat protobuf, not nested)
+    if not params:
+        import base64
+        vid_bytes = video_id.encode("utf-8")
+        proto = b"\x0a" + bytes([len(vid_bytes)]) + vid_bytes + b"\x12\x00\x1a\x00"
+        params = base64.b64encode(proto).decode("utf-8")
+        if debug:
+            print(f"[innertube] using constructed params: {params}")
+
     if debug:
         print(f"[innertube] key={api_key[:20]}... version={client_version}")
-
-    # Build protobuf params for transcript request
-    # Structure: 3 nested messages, each field 1: { { { video_id } } }
-    vid_bytes = video_id.encode("utf-8")
-    level1 = b"\x0a" + bytes([len(vid_bytes)]) + vid_bytes
-    level2 = b"\x0a" + bytes([len(level1)]) + level1
-    level3 = b"\x0a" + bytes([len(level2)]) + level2
-    params = base64.b64encode(level3).decode("utf-8")
 
     # Call the innertube get_transcript endpoint
     payload = {
@@ -535,7 +574,7 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
 
     if resp.status_code != 200:
         if debug:
-            print(f"[innertube] error response: {resp.text[:300]}")
+            print(f"[innertube] error: {resp.text[:200]}")
         return None
 
     # Parse the transcript from the innertube response
@@ -548,10 +587,7 @@ def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
         )
     except (KeyError, IndexError):
         if debug:
-            # Try to find transcript segments in alternative response structures
-            print(f"[innertube] response keys: {list(data.keys())}")
-            if "actions" in data:
-                print(f"[innertube] actions[0] keys: {list(data['actions'][0].keys()) if data['actions'] else 'empty'}")
+            print(f"[innertube] unexpected response structure: {json.dumps(data, indent=2)[:500]}")
         return None
 
     segments = []
