@@ -449,6 +449,135 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
     return None
 
 
+def _fetch_transcript_direct(video_id: str, debug: bool = False) -> str | None:
+    """Fetch transcript by scraping the YouTube page directly with Chrome cookies.
+
+    Bypasses both youtube-transcript-api and yt-dlp entirely.
+    Extracts caption track URLs from the page's player response JSON,
+    then fetches the raw caption XML.
+    """
+    import re
+    import subprocess
+    import tempfile
+    import xml.etree.ElementTree as ET
+
+    import requests
+
+    # Step 1: Get Chrome cookies via yt-dlp (it can extract them reliably)
+    import shutil
+    import sys
+    venv_ytdlp = os.path.join(os.path.dirname(sys.executable), "yt-dlp")
+    ytdlp = venv_ytdlp if os.path.isfile(venv_ytdlp) else shutil.which("yt-dlp")
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/125.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+
+    # Export Chrome cookies to a temp file, then load them
+    if ytdlp:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as tmp:
+                tmp_cookie_path = tmp.name
+            subprocess.run(
+                [ytdlp, "--cookies-from-browser", "chrome",
+                 "--cookies", tmp_cookie_path,
+                 "--skip-download", "--no-warnings",
+                 "https://www.youtube.com/"],
+                capture_output=True, text=True, timeout=30,
+            )
+            from http.cookiejar import MozillaCookieJar
+            jar = MozillaCookieJar(tmp_cookie_path)
+            jar.load(ignore_discard=True, ignore_expires=True)
+            session.cookies = jar
+            if debug:
+                print(f"[direct] loaded {len(jar)} cookies from Chrome")
+            os.unlink(tmp_cookie_path)
+        except Exception as e:
+            if debug:
+                print(f"[direct] cookie export failed: {e}")
+            try:
+                os.unlink(tmp_cookie_path)
+            except Exception:
+                pass
+
+    # Step 2: Fetch the YouTube watch page
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        resp = session.get(url, timeout=30)
+        if debug:
+            print(f"[direct] page fetch: {resp.status_code}, {len(resp.text)} bytes")
+    except Exception as e:
+        if debug:
+            print(f"[direct] page fetch failed: {e}")
+        return None
+
+    if resp.status_code != 200:
+        return None
+
+    # Step 3: Extract captions from ytInitialPlayerResponse
+    match = re.search(r"ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;", resp.text)
+    if not match:
+        if debug:
+            print("[direct] no ytInitialPlayerResponse found in page")
+        return None
+
+    try:
+        player = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        if debug:
+            print("[direct] failed to parse player response JSON")
+        return None
+
+    captions_data = (
+        player.get("captions", {})
+        .get("playerCaptionsTracklistRenderer", {})
+        .get("captionTracks", [])
+    )
+    if not captions_data:
+        if debug:
+            print("[direct] no caption tracks found")
+        return None
+
+    # Find English captions (prefer manual over auto-generated)
+    caption_url = None
+    for track in captions_data:
+        if track.get("languageCode", "") == "en":
+            caption_url = track.get("baseUrl")
+            break
+    if not caption_url:
+        caption_url = captions_data[0].get("baseUrl")
+
+    if not caption_url:
+        return None
+
+    if debug:
+        kind = "auto" if "kind" in caption_url else "manual"
+        print(f"[direct] found {kind} captions, fetching...")
+
+    # Step 4: Fetch the captions XML
+    try:
+        cap_resp = session.get(caption_url, timeout=30)
+    except Exception as e:
+        if debug:
+            print(f"[direct] caption fetch failed: {e}")
+        return None
+
+    # Step 5: Parse XML to plain text
+    try:
+        root = ET.fromstring(cap_resp.text)
+        texts = [elem.text for elem in root.iter("text") if elem.text]
+        text = " ".join(texts)
+    except ET.ParseError:
+        text = re.sub(r"<[^>]+>", " ", cap_resp.text)
+        text = " ".join(text.split())
+
+    return text if len(text) > 100 else None
+
+
 def get_transcript(video_id: str, languages: list[str] | None = None,
                    video_title: str = "", channel: str = "") -> str:
     """Fetch the transcript for a YouTube video.
@@ -475,13 +604,15 @@ def get_transcript(video_id: str, languages: list[str] | None = None,
     if languages is None:
         languages = ["en"]
 
-    text = None
-    try:
-        ytt_api = _get_ytt_api()
-        transcript = ytt_api.fetch(video_id, languages=languages)
-        text = " ".join(entry.text for entry in transcript.snippets)
-    except Exception:
-        pass
+    text = _fetch_transcript_direct(video_id)
+
+    if not text:
+        try:
+            ytt_api = _get_ytt_api()
+            transcript = ytt_api.fetch(video_id, languages=languages)
+            text = " ".join(entry.text for entry in transcript.snippets)
+        except Exception:
+            pass
 
     if not text:
         text = _fetch_transcript_ytdlp(video_id)

@@ -1112,8 +1112,7 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
 
     console.print(f"  [cyan]{len(new_videos)} new videos ({len(videos) - len(new_videos)} already stored)[/cyan]")
 
-    from .source_manager import _fetch_transcript_ytdlp, _get_ytt_api
-    ytt_api = _get_ytt_api()
+    from .source_manager import _fetch_transcript_direct, _fetch_transcript_ytdlp, _get_ytt_api
 
     success = 0
     skipped = 0
@@ -1121,33 +1120,40 @@ def _ingest_channel(channel_handle: str, channel_name: str, limit: int) -> tuple
     for i, v in enumerate(new_videos, 1):
         console.print(f"    [{i}/{len(new_videos)}] {v['title'][:55]}...", end=" ")
         text = None
+        method = ""
 
-        # Try youtube-transcript-api first
-        try:
-            try:
-                transcript = ytt_api.fetch(v["video_id"], languages=["en"])
-            except Exception:
-                transcript = ytt_api.fetch(v["video_id"])
-            text = " ".join(entry.text for entry in transcript.snippets)
-        except Exception as e:
-            if not first_error:
-                first_error = str(e)
+        # Method 1: Direct page scrape with Chrome cookies (most reliable)
+        text = _fetch_transcript_direct(v["video_id"], debug=True)
+        if text:
+            method = " [direct]"
 
-        # Fallback to yt-dlp
-        used_ytdlp = False
+        # Method 2: youtube-transcript-api
         if not text:
-            console.print("[dim]trying yt-dlp...[/dim]", end=" ")
+            try:
+                ytt_api = _get_ytt_api()
+                try:
+                    transcript = ytt_api.fetch(v["video_id"], languages=["en"])
+                except Exception:
+                    transcript = ytt_api.fetch(v["video_id"])
+                text = " ".join(entry.text for entry in transcript.snippets)
+                if text:
+                    method = " [ytt]"
+            except Exception as e:
+                if not first_error:
+                    first_error = str(e)
+
+        # Method 3: yt-dlp
+        if not text:
             text = _fetch_transcript_ytdlp(v["video_id"], debug=True)
             if text:
-                used_ytdlp = True
+                method = " [yt-dlp]"
 
         if not text or len(text.strip()) < 100:
             console.print("[dim]skipped (no transcript)[/dim]")
             skipped += 1
         else:
             save_transcript(v["video_id"], v["title"], text, v["channel"])
-            tag = " via yt-dlp" if used_ytdlp else ""
-            console.print(f"[green]{len(text):,} chars{tag}[/green]")
+            console.print(f"[green]{len(text):,} chars{method}[/green]")
             success += 1
 
         # Delay to avoid YouTube rate-limiting
