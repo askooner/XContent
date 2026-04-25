@@ -371,7 +371,18 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
     if debug:
         print(f"[yt-dlp] using: {ytdlp}")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
+
+    # Try multiple strategies: impersonation only, then cookies.txt, then Chrome
+    cookie_strategies = [
+        [],  # impersonation alone (curl_cffi)
+    ]
+    if cookie_path.exists():
+        cookie_strategies.append(["--cookies", str(cookie_path)])
+    cookie_strategies.append(["--cookies-from-browser", "chrome"])
+
+    for strategy in cookie_strategies:
+      with tempfile.TemporaryDirectory() as tmpdir:
         cmd = [
             ytdlp,
             "--skip-download",
@@ -379,35 +390,34 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
             "--write-auto-sub",
             "--sub-lang", "en",
             "--sub-format", "vtt/srt/best",
-            "--cookies-from-browser", "safari",
             "-o", f"{tmpdir}/sub",
             f"https://www.youtube.com/watch?v={video_id}",
-        ]
+        ] + strategy
 
+        strategy_name = strategy[1] if strategy else "impersonation only"
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=120
             )
             if debug:
-                print(f"[yt-dlp] exit code: {result.returncode}")
+                print(f"[yt-dlp] strategy: {strategy_name} → exit {result.returncode}")
                 if result.stderr:
-                    for line in result.stderr.strip().split("\n")[-5:]:
-                        print(f"[yt-dlp] {line}")
+                    for line in result.stderr.strip().split("\n")[-3:]:
+                        print(f"[yt-dlp]   {line}")
         except Exception as e:
             if debug:
-                print(f"[yt-dlp] subprocess error: {e}")
-            return None
+                print(f"[yt-dlp] strategy: {strategy_name} → error: {e}")
+            continue
 
         # Find the subtitle file
         sub_files = [f for f in os.listdir(tmpdir) if f.endswith((".vtt", ".srt", ".srv1"))]
         if debug:
             print(f"[yt-dlp] files in tmpdir: {os.listdir(tmpdir)}")
-        sub_file = os.path.join(tmpdir, sub_files[0]) if sub_files else None
 
-        if not sub_file:
-            return None
+        if not sub_files:
+            continue
 
-        with open(sub_file) as f:
+        with open(os.path.join(tmpdir, sub_files[0])) as f:
             raw = f.read()
 
         # Strip VTT/SRT formatting to plain text
@@ -429,7 +439,10 @@ def _fetch_transcript_ytdlp(video_id: str, debug: bool = False) -> str | None:
                 lines.append(line)
 
         text = " ".join(lines)
-        return text if len(text) > 100 else None
+        if len(text) > 100:
+            return text
+
+    return None
 
 
 def get_transcript(video_id: str, languages: list[str] | None = None,
