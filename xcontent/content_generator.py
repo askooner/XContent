@@ -169,17 +169,15 @@ def _extract_key_material(client, transcript: str, topic: str, focus: str, video
     return response.content[0].text
 
 
-def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) -> list[dict]:
-    """Extract multiple distinct post ideas from a single transcript.
+def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
+                   style_name: str = "insights") -> list[dict]:
+    """Extract the 1-2 best post ideas from a transcript, calibrated to the user's taste.
 
-    Args:
-        num_ideas: Target number. 0 = auto-detect (find as many good ones as exist).
-
-    Returns a list of dicts with 'title', 'angle', and 'key_material' for each idea.
+    Uses the user's published posts as the quality bar — only extracts ideas
+    that could produce posts at that level.
     """
     client = _get_anthropic_client()
 
-    # For very long transcripts, truncate to save costs on the extraction call
     extract_transcript = transcript
     if len(extract_transcript) > 80_000:
         extract_transcript = extract_transcript[:80_000]
@@ -187,35 +185,51 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
     if num_ideas <= 0:
         num_ideas = 2
 
-    count_instruction = f"Find exactly {num_ideas} ideas."
+    # Load the user's real posts as calibration examples
+    calibration = ""
+    try:
+        from .style_manager import load_style
+        style = load_style(style_name)
+        examples = style.get("examples", [])
+        if examples:
+            # Pick up to 5 examples to show the model the user's taste
+            sample = examples[:5]
+            calibration = "\n\nHere are real posts from this account. These represent the QUALITY BAR and TASTE.\nOnly extract ideas that could produce posts at THIS level:\n\n"
+            for i, ex in enumerate(sample, 1):
+                calibration += f"--- EXAMPLE {i} ---\n{ex}\n\n"
+    except Exception:
+        pass
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=6000,
         system=(
-            "You find the 1-2 BEST post ideas in a transcript for a Twitter account about founders and entrepreneurship. Output ONLY a valid JSON array.\n\n"
-            "Each object must have exactly these 3 keys:\n"
-            '- "title": short specific post title (not generic)\n'
-            '- "angle": the hook — the ONE thing that makes this surprising or worth reading (1 sentence)\n'
-            '- "key_material": the actual quotes and facts to build the post from '
-            "(VERBATIM quotes from the transcript, specific numbers, names, dates, stories — include at least 2-3 direct quotes)\n\n"
-            "WHAT MAKES A GREAT IDEA:\n"
-            "- A founder doing the OPPOSITE of what everyone else does — and it working\n"
-            "- A specific decision that seemed crazy but had a clear logic behind it\n"
-            "- A moment where everything almost fell apart and what they actually did\n"
-            "- A mental model or framework that changes how you think about building\n"
-            "- A number or fact that makes you stop and rethink an assumption\n\n"
-            "WHAT TO SKIP:\n"
-            "- Generic advice: 'work hard', 'focus matters', 'be resilient', 'take risks'\n"
-            "- Political takes, health advice, geopolitics, anything not about building companies\n"
-            "- Surface-level observations without a specific story behind them\n"
-            "- If the transcript has NO great founder/business ideas, return an empty array []\n"
-            "- Better to return 0 ideas than 1 mediocre one\n\n"
+            "You are the editorial brain for Founder Mode, a Twitter account about founders and entrepreneurship.\n\n"
+            "Your job: find the 1-2 moments in a transcript that would make someone stop scrolling.\n\n"
+            "Output ONLY a valid JSON array. Each object has exactly 3 keys:\n"
+            '- "title": specific post title (not generic — name the founder and the specific thing)\n'
+            '- "angle": the hook in 1 sentence — why this is surprising, counterintuitive, or compelling\n'
+            '- "key_material": VERBATIM quotes from the transcript (at least 2-3 direct quotes), '
+            "specific numbers, names, stories — the raw material to build the post from\n\n"
+            "YOUR TASTE (what you're looking for):\n"
+            "- A specific founder DECISION that went against conventional wisdom\n"
+            "- The exact moment something almost failed and what they did differently\n"
+            "- A number or fact that completely reframes how you think about a business\n"
+            "- A mental model from a builder that's immediately useful\n"
+            "- A direct quote so good it could stand on its own\n\n"
+            "KILL LIST (never extract these):\n"
+            "- Generic motivation: 'work hard', 'be resilient', 'take risks', 'believe in yourself'\n"
+            "- Political takes, health, geopolitics, anything not about building\n"
+            "- Vague observations without a specific story: 'innovation matters', 'culture is key'\n"
+            "- Ideas where you can't point to a specific quote or number from the transcript\n\n"
+            "If this transcript has NO ideas that meet the bar, return []\n"
+            "Better to return 0 than to return something mediocre.\n\n"
             "Output ONLY the JSON array. No text before or after it. No markdown."
         ),
         messages=[{"role": "user", "content": (
-            f"Source: {video_title}\n\n"
-            f"{count_instruction}\n\n"
+            f"Source: {video_title}\n"
+            f"{calibration}\n"
+            f"Find the best 1-{num_ideas} ideas from this transcript.\n\n"
             f"--- TRANSCRIPT ---\n{extract_transcript}\n--- END TRANSCRIPT ---"
         )}],
     )
