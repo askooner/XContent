@@ -471,3 +471,31 @@ def count_feedback() -> int:
     row = db.execute("SELECT COUNT(*) AS n FROM feedback").fetchone()
     db.close()
     return row["n"] if row else 0
+
+
+def get_recent_post_topics(days: int = 7, limit: int = 50) -> list[str]:
+    """Get topics/titles of posts generated in the last N days for dedup."""
+    db = _get_db()
+    rows = db.execute(
+        """SELECT topic, video_title FROM posts
+           WHERE created_at >= datetime('now', ?)
+           ORDER BY created_at DESC LIMIT ?""",
+        (f"-{days} days", limit),
+    ).fetchall()
+    db.close()
+    return [r["topic"] or r["video_title"] for r in rows if r["topic"] or r["video_title"]]
+
+
+def get_random_transcripts(limit: int = 5, min_chars: int = 5000) -> list[dict]:
+    """Get random transcripts from the library, preferring longer ones."""
+    db = _get_db()
+    rows = db.execute(
+        """SELECT video_id, video_title, channel, char_count
+           FROM transcripts
+           WHERE char_count >= ?
+           ORDER BY RANDOM()
+           LIMIT ?""",
+        (min_chars, limit),
+    ).fetchall()
+    db.close()
+    return [dict(r) for r in rows]

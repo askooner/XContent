@@ -1237,41 +1237,42 @@ def ingest(channel, ingest_all, limit):
 @click.option("--count", "-n", default=10, help="Number of posts to generate")
 @click.option("--type", "-T", "content_type", default="insights",
               type=click.Choice(["insights", "essays", "transcripts", "quote-tweets"]),
-              help="Content format")
+              help="Content format (default: auto-picked per transcript)")
 @click.option("--model", "-m", default=None, help="Claude model to use")
 @click.option("--instructions", "-i", default="", help="Additional instructions")
 @click.option("--no-typefully", is_flag=True, help="Don't push to Typefully")
-@click.option("--mine", default=5, help="Max unmined transcripts to process if ideas run low")
-def auto(style_name, count, content_type, model, instructions, no_typefully, mine):
+def auto(style_name, count, content_type, model, instructions, no_typefully):
     """Auto-generate posts from your library — no links needed.
 
     \b
-    Picks unused ideas from your transcript library, diversifies across
-    different founders, generates posts through a quality gate, and
-    only shows you the ones that pass.
+    New pipeline: picks random transcripts, scores story value (is this
+    moment worth a post?), skips topics covered in the last 7 days,
+    then sends the FULL transcript to Sonnet to find the moment and
+    write the post in one shot. No lossy idea extraction.
 
     \b
     Fill your library first with 'xcontent ingest', then:
-        xcontent auto --count 20 --style insights --no-typefully
+        xcontent auto --count 5 --no-typefully
     """
-    from .knowledge_base import count_transcripts, get_unused_ideas
+    from .knowledge_base import count_transcripts
 
     total_transcripts = count_transcripts()
     if total_transcripts == 0:
         console.print("[red]Your library is empty. Run 'xcontent ingest <channel>' first.[/red]")
         return
 
-    unused = get_unused_ideas(limit=1)
     console.print(f"\n[bold]Auto-generating {count} posts from your library[/bold]")
-    console.print(f"[dim]{total_transcripts} transcripts available[/dim]\n")
+    console.print(f"[dim]{total_transcripts} transcripts | story value gate | 7-day dedup | full-transcript mode[/dim]\n")
 
     from .content_generator import generate_auto
 
     def on_progress(step, current, total):
-        if step == "mining":
-            console.print("[dim]  Mining new transcript for ideas...[/dim]")
+        if step == "scoring":
+            console.print(f"[dim]  Scoring transcript {current}/{total} for story value...[/dim]")
         elif step == "generating":
-            console.print(f"[dim]  Generating post {current}/{total}...[/dim]")
+            console.print(f"[dim]  Writing post {current}/{count} from full transcript...[/dim]")
+        elif step == "rejected":
+            console.print(f"[dim]  {current} transcripts rejected by story value gate[/dim]")
 
     try:
         results = generate_auto(
@@ -1280,7 +1281,6 @@ def auto(style_name, count, content_type, model, instructions, no_typefully, min
             count=count,
             model=model,
             additional_instructions=instructions,
-            mine_new=mine,
             on_progress=on_progress,
         )
     except Exception as e:
@@ -1288,7 +1288,8 @@ def auto(style_name, count, content_type, model, instructions, no_typefully, min
         return
 
     if not results:
-        console.print("[yellow]No posts generated. Add more transcripts with 'xcontent ingest'.[/yellow]")
+        console.print("[yellow]No posts generated — story value gate rejected all candidates.[/yellow]")
+        console.print("[dim]This means the transcripts didn't have moments worth posting about, or topics were already covered.[/dim]")
         return
 
     passed = [r for r in results if r["passed"]]
@@ -1298,11 +1299,15 @@ def auto(style_name, count, content_type, model, instructions, no_typefully, min
 
     for i, r in enumerate(results, 1):
         status = "[green]PASS[/green]" if r["passed"] else f"[yellow]FLAGGED ({r['score']})[/yellow]"
-        console.print(f"[bold cyan]── Post {i} ── {status} ── {r['topic'][:50]} ──[/bold cyan]\n")
+        fmt = r.get("format", content_type)
+        story_score = r.get("story_score", "?")
+        console.print(f"[bold cyan]── Post {i} ── {status} ── story:{story_score}/10 ── {fmt} ── {r['topic'][:50]} ──[/bold cyan]\n")
         console.print(r["content"])
+        if r.get("angle"):
+            console.print(f"\n[dim]Angle: {r['angle']}[/dim]")
         if r["issues"]:
-            console.print(f"\n[dim]Issues: {'; '.join(r['issues'][:3])}[/dim]")
-        console.print(f"[dim]Score: {r['score']} | Source: {r['video_title'][:40]}[/dim]")
+            console.print(f"[dim]Issues: {'; '.join(r['issues'][:3])}[/dim]")
+        console.print(f"[dim]Quality: {r['score']} | Source: {r['video_title'][:40]}[/dim]")
         console.print(f"[dim]Saved: {r['file_path']}[/dim]\n")
 
     # Copy passed posts to clipboard
@@ -1333,16 +1338,23 @@ def auto(style_name, count, content_type, model, instructions, no_typefully, min
     console.print()
     table = Table(title="Summary")
     table.add_column("#", style="dim", width=3)
-    table.add_column("Score", width=6)
-    table.add_column("Status", width=8)
-    table.add_column("Topic", max_width=40)
-    table.add_column("Source", style="dim", max_width=30)
+    table.add_column("Story", width=6)
+    table.add_column("Quality", width=8)
+    table.add_column("Format", width=12)
+    table.add_column("Topic", max_width=35)
+    table.add_column("Source", style="dim", max_width=25)
 
     for i, r in enumerate(results, 1):
-        status = "PASS" if r["passed"] else "FLAG"
-        style = "green" if r["passed"] else "yellow"
-        table.add_row(str(i), str(r["score"]), f"[{style}]{status}[/{style}]",
-                       r["topic"][:40], r["video_title"][:30])
+        q_status = "PASS" if r["passed"] else "FLAG"
+        q_style = "green" if r["passed"] else "yellow"
+        table.add_row(
+            str(i),
+            f"{r.get('story_score', '?')}/10",
+            f"[{q_style}]{r['score']} {q_status}[/{q_style}]",
+            r.get("format", content_type),
+            r["topic"][:35],
+            r["video_title"][:25],
+        )
 
     console.print(table)
 

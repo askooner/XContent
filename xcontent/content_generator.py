@@ -817,6 +817,140 @@ def _filter_on_topic(transcripts: list[dict]) -> list[dict]:
     return result
 
 
+def _score_story_value(client, video_title: str, transcript_excerpt: str,
+                       recent_topics: list[str], style_name: str = "insights") -> dict | None:
+    """Score whether a transcript has a moment worth posting about.
+
+    Returns dict with {title, angle, format, score} if score >= 7, else None.
+    """
+    recent_context = ""
+    if recent_topics:
+        recent_context = (
+            "\n\nPOSTS FROM THE LAST 7 DAYS (do NOT repeat these topics/angles):\n"
+            + "\n".join(f"- {t}" for t in recent_topics[:20])
+        )
+
+    calibration = ""
+    try:
+        from .style_manager import load_style
+        style = load_style(style_name)
+        examples = style.get("examples", [])
+        if examples:
+            sample = examples[:5]
+            calibration = "\n\nHere are real posts from this account — this is the QUALITY BAR:\n\n"
+            for i, ex in enumerate(sample, 1):
+                calibration += f"--- EXAMPLE {i} ---\n{ex}\n\n"
+    except Exception:
+        pass
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1500,
+        system=(
+            "You are the editorial brain for Founder Mode, a Twitter account about founders, "
+            "entrepreneurship, business building, and technology.\n\n"
+            "Your job: read a transcript and decide if there's a SINGLE MOMENT worth a post.\n\n"
+            "A great moment is:\n"
+            "- A specific founder DECISION that defied convention (with the exact story)\n"
+            "- A number or fact that completely reframes how you think about a business\n"
+            "- A direct quote so good it could stand on its own as a tweet\n"
+            "- The exact moment something almost failed and what they did differently\n"
+            "- A mental model from a builder that's immediately actionable\n\n"
+            "A bad moment (REJECT these):\n"
+            "- Generic motivation: 'work hard', 'believe in yourself', 'take risks'\n"
+            "- Vague observations: 'culture matters', 'innovation is key'\n"
+            "- Politics, health, geopolitics, anything not about building\n"
+            "- Something everyone already knows about this person\n"
+            "- Topics already covered in recent posts\n\n"
+            "Also decide the BEST FORMAT for this moment:\n"
+            "- 'insights': a narrative post with hook, tension, turn, evidence, closing\n"
+            "- 'quote-tweets': a single devastating direct quote + attribution\n"
+            "- 'essays': a longer reflective piece letting the founder's words breathe\n"
+            "- 'transcripts': numbered key points from the founder's own words\n\n"
+            "Output ONLY valid JSON with these keys:\n"
+            '- "score": 1-10 (7+ means worth posting)\n'
+            '- "title": specific post title naming the founder and the specific thing\n'
+            '- "angle": the hook — why this would stop someone scrolling\n'
+            '- "format": best content format from the list above\n'
+            '- "reason": 1 sentence on why this scored what it did\n\n'
+            "If NOTHING meets the bar, return: {\"score\": 0, \"title\": \"\", \"angle\": \"\", "
+            "\"format\": \"insights\", \"reason\": \"nothing worth posting\"}\n\n"
+            "Output ONLY the JSON. No markdown, no text before or after."
+        ),
+        messages=[{"role": "user", "content": (
+            f"Source: {video_title}\n"
+            f"{calibration}"
+            f"{recent_context}\n\n"
+            f"--- TRANSCRIPT ---\n{transcript_excerpt}\n--- END TRANSCRIPT ---"
+        )}],
+    )
+
+    text = response.content[0].text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:])
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+
+    try:
+        result = json.loads(text)
+        if result.get("score", 0) >= 7:
+            return result
+    except json.JSONDecodeError:
+        pass
+
+    return None
+
+
+def _generate_from_full_transcript(
+    client, model: str, style_name: str, transcript: str,
+    video_title: str, video_id: str, story: dict,
+    additional_instructions: str = "",
+) -> tuple[str, dict]:
+    """Generate a post from a FULL transcript — the model finds the moment itself."""
+    from .style_manager import build_style_prompt
+
+    content_type = story.get("format", "insights")
+    style_prompt = build_style_prompt(style_name)
+    system_prompt = _build_system_prompt(style_prompt, content_type, style_name)
+
+    max_chars = 90_000
+    if len(transcript) > max_chars:
+        transcript = transcript[:max_chars]
+
+    library_context = _get_library_context(
+        client, story.get("title", ""), story.get("angle", ""),
+        exclude_video_id=video_id
+    )
+
+    user_content = (
+        f"Source: {video_title}\n\n"
+        f"YOUR EDITORIAL BRIEF:\n"
+        f"Title: {story['title']}\n"
+        f"Angle: {story['angle']}\n"
+        f"Format: {content_type}\n\n"
+        f"Find the exact quotes, numbers, and story beats in the transcript below "
+        f"that support this angle. Use VERBATIM quotes — they are the backbone.\n\n"
+    )
+
+    if library_context:
+        user_content += library_context + "\n\n"
+
+    if additional_instructions:
+        user_content += f"Additional instructions: {additional_instructions}\n\n"
+
+    user_content += (
+        f"--- FULL TRANSCRIPT ---\n{transcript}\n--- END TRANSCRIPT ---\n\n"
+        f"Now write the post. Output ONLY the finished post, nothing else."
+    )
+
+    content, quality = _generate_with_quality_gate(
+        client, model, system_prompt, user_content, content_type
+    )
+
+    return content, quality
+
+
 def generate_auto(
     style_name: str,
     content_type: str = "insights",
@@ -828,103 +962,74 @@ def generate_auto(
 ) -> list[dict]:
     """Auto-generate posts from the transcript library — no manual input.
 
-    1. Pulls unused ideas (already extracted from past transcripts).
-    2. If not enough, mines new transcripts for ideas.
-    3. Diversifies across different video sources.
-    4. Generates each post through the quality gate.
-
-    Args:
-        count: Target number of posts to produce.
-        mine_new: How many unmined transcripts to process if we need more ideas.
-        on_progress: Optional callback(step: str, current: int, total: int).
+    Pipeline (BrandWorks-inspired):
+    1. Pick diverse transcripts from the library.
+    2. Story value gate: score each transcript — is there a moment worth posting?
+    3. 7-day dedup: skip topics/angles already covered recently.
+    4. Full-transcript generation: send the whole transcript to Sonnet, let it
+       find the moment AND write the post in one shot (no lossy extraction).
+    5. Quality gate: deterministic check on the finished post.
 
     Returns:
-        List of dicts: {"content", "score", "issues", "topic", "video_title", "file_path"}
+        List of dicts with content, scores, topic, etc.
     """
     from .knowledge_base import (
-        get_unmined_transcripts,
+        get_random_transcripts,
+        get_recent_post_topics,
         get_transcript_text,
-        get_unused_ideas,
-        mark_idea_used,
-        save_ideas,
         save_post,
     )
-    from .style_manager import build_style_prompt
 
     client = _get_anthropic_client()
     model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
-    # Always mine new transcripts first to ensure diversity across sources
-    unmined = get_unmined_transcripts(limit=mine_new * 3)
-    for t in _filter_on_topic(unmined)[:mine_new]:
-        if on_progress:
-            on_progress("mining", 0, 0)
-        text = get_transcript_text(t["video_id"])
-        if not text:
-            continue
-        new_ideas = extract_ideas(text, t["video_title"], num_ideas=3)
-        save_ideas(t["video_id"], new_ideas)
+    recent_topics = get_recent_post_topics(days=7)
 
-    ideas = get_unused_ideas(limit=count * 5)
+    candidates = get_random_transcripts(limit=count * 4, min_chars=3000)
+    candidates = _filter_on_topic(candidates)
 
-    # Diversify: round-robin across different videos
-    by_video: dict[str, list] = {}
-    for idea in ideas:
-        vid = idea.get("video_id", "unknown")
-        by_video.setdefault(vid, []).append(idea)
+    if not candidates:
+        return []
 
-    selected = []
-    while len(selected) < count * 2 and by_video:
-        for vid in list(by_video.keys()):
-            if len(selected) >= count * 2:
-                break
-            if by_video[vid]:
-                selected.append(by_video[vid].pop(0))
-            if not by_video[vid]:
-                del by_video[vid]
-
-    # Generate posts with quality gate
-    style_prompt = build_style_prompt(style_name)
-    system_prompt = _build_system_prompt(style_prompt, content_type, style_name)
     _ensure_content_dir()
-
     results = []
-    attempted = 0
+    rejected = 0
 
-    for idea in selected:
+    for idx, t in enumerate(candidates):
         if len(results) >= count:
             break
-        attempted += 1
 
-        title = idea.get("title", "untitled")
-        angle = idea.get("angle", "")
-        key_material = idea.get("key_material", "")
-        video_title = idea.get("video_title", "")
-        video_id = idea.get("video_id", "")
+        video_id = t["video_id"]
+        video_title = t["video_title"]
+
+        if on_progress:
+            on_progress("scoring", idx + 1, len(candidates))
+
+        text = get_transcript_text(video_id)
+        if not text or len(text) < 1000:
+            continue
+
+        excerpt = text[:80_000]
+        story = _score_story_value(
+            client, video_title, excerpt, recent_topics, style_name
+        )
+
+        if not story:
+            rejected += 1
+            continue
+
+        title = story.get("title", video_title)
+        angle = story.get("angle", "")
+        chosen_format = story.get("format", content_type)
 
         if on_progress:
             on_progress("generating", len(results) + 1, count)
 
-        library_context = _get_library_context(
-            client, title, angle, exclude_video_id=video_id
-        )
-        source_material = key_material
-        if library_context:
-            source_material = key_material + "\n" + library_context
-
-        user_prompt = _build_user_prompt(
-            transcript=source_material,
-            topic=title,
-            focus=angle,
-            additional_instructions=additional_instructions,
-            video_title=video_title,
+        content, quality = _generate_from_full_transcript(
+            client, model, style_name, text, video_title, video_id,
+            story, additional_instructions,
         )
 
-        content, quality = _generate_with_quality_gate(
-            client, model, system_prompt, user_prompt, content_type
-        )
-
-        # Save to file
         slug = _slugify(title)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base = f"{timestamp}_auto_{slug}"
@@ -933,11 +1038,13 @@ def generate_auto(
 
         meta = {
             "style": style_name,
-            "content_type": content_type,
+            "content_type": chosen_format,
             "topic": title,
             "focus": angle,
             "video_title": video_title,
             "video_id": video_id,
+            "story_score": story.get("score", 0),
+            "story_reason": story.get("reason", ""),
             "quality_score": quality["score"],
             "quality_passed": quality["passed"],
             "generated_at": datetime.now().isoformat(),
@@ -949,7 +1056,7 @@ def generate_auto(
             save_post(
                 style=style_name,
                 content=content,
-                content_type=content_type,
+                content_type=chosen_format,
                 topic=title,
                 focus=angle,
                 video_id=video_id,
@@ -959,12 +1066,7 @@ def generate_auto(
         except Exception:
             pass
 
-        # Mark the idea as used if it has an id
-        if idea.get("id"):
-            try:
-                mark_idea_used(idea["id"])
-            except Exception:
-                pass
+        recent_topics.append(title)
 
         results.append({
             "content": content,
@@ -972,9 +1074,15 @@ def generate_auto(
             "passed": quality["passed"],
             "issues": quality["issues"],
             "topic": title,
+            "angle": angle,
+            "format": chosen_format,
+            "story_score": story.get("score", 0),
             "video_title": video_title,
             "file_path": txt_path,
         })
+
+    if on_progress and rejected > 0:
+        on_progress("rejected", rejected, rejected + len(results))
 
     return results
 
