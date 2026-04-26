@@ -78,7 +78,7 @@ def _get_library_context(client, topic: str, angle: str = "",
             continue
 
         extract = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-6",
             max_tokens=1000,
             system=(
                 "Extract ONLY the parts of this transcript that relate to the "
@@ -149,7 +149,7 @@ def _extract_key_material(client, transcript: str, topic: str, focus: str, video
         extract_prompt += f" (focus on: {focus})"
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=2000,
         system=(
             "You are a research assistant. Your job is to extract the best raw material "
@@ -184,31 +184,34 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
     if len(extract_transcript) > 80_000:
         extract_transcript = extract_transcript[:80_000]
 
-    # Default to 3 — quality over quantity. Caller can override.
     if num_ideas <= 0:
-        num_ideas = 3
+        num_ideas = 2
 
     count_instruction = f"Find exactly {num_ideas} ideas."
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=6000,
         system=(
-            "You find the best post ideas in a transcript. Output ONLY a valid JSON array.\n\n"
+            "You find the 1-2 BEST post ideas in a transcript for a Twitter account about founders and entrepreneurship. Output ONLY a valid JSON array.\n\n"
             "Each object must have exactly these 3 keys:\n"
             '- "title": short specific post title (not generic)\n'
             '- "angle": the hook — the ONE thing that makes this surprising or worth reading (1 sentence)\n'
             '- "key_material": the actual quotes and facts to build the post from '
-            "(VERBATIM quotes from the transcript, specific numbers, names, dates, stories)\n\n"
-            "THE STANDARD IS HIGH:\n"
-            "- Each idea must have a real TENSION or SURPRISE — conventional wisdom vs what actually happened,\n"
-            "  or a counterintuitive decision, or a specific moment that changed everything\n"
-            "- Each idea must be grounded in a SPECIFIC STORY or QUOTE, not a general observation\n"
-            "- Include verbatim quotes with the exact words from the transcript\n"
-            "- Skip anything generic — 'work hard', 'focus matters', 'be resilient'. Those are not ideas.\n"
-            "- If the transcript doesn't have enough good material for all 3, return fewer — better to\n"
-            "  return 1 great idea than 3 mediocre ones\n"
-            "- Output ONLY the JSON array. No text before or after it. No markdown."
+            "(VERBATIM quotes from the transcript, specific numbers, names, dates, stories — include at least 2-3 direct quotes)\n\n"
+            "WHAT MAKES A GREAT IDEA:\n"
+            "- A founder doing the OPPOSITE of what everyone else does — and it working\n"
+            "- A specific decision that seemed crazy but had a clear logic behind it\n"
+            "- A moment where everything almost fell apart and what they actually did\n"
+            "- A mental model or framework that changes how you think about building\n"
+            "- A number or fact that makes you stop and rethink an assumption\n\n"
+            "WHAT TO SKIP:\n"
+            "- Generic advice: 'work hard', 'focus matters', 'be resilient', 'take risks'\n"
+            "- Political takes, health advice, geopolitics, anything not about building companies\n"
+            "- Surface-level observations without a specific story behind them\n"
+            "- If the transcript has NO great founder/business ideas, return an empty array []\n"
+            "- Better to return 0 ideas than 1 mediocre one\n\n"
+            "Output ONLY the JSON array. No text before or after it. No markdown."
         ),
         messages=[{"role": "user", "content": (
             f"Source: {video_title}\n\n"
@@ -248,7 +251,7 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0) ->
 
     # Last resort: prefill assistant response to force JSON
     response2 = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=6000,
         messages=[
             {"role": "user", "content": (
@@ -300,7 +303,7 @@ def generate_batch(
 
     _ensure_content_dir()
     client = _get_anthropic_client()
-    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
     # Step 1: Extract ideas
     ideas = extract_ideas(transcript, video_title, num_ideas=num_posts)
@@ -404,7 +407,7 @@ def generate(
     from .style_manager import build_style_prompt
 
     client = _get_anthropic_client()
-    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
     # For long transcripts, extract key material first (cheap step)
     if len(transcript) > 15_000:
@@ -451,11 +454,11 @@ def generate_quote_reply(
     from .style_manager import build_style_prompt
 
     client = _get_anthropic_client()
-    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
     # Step 1: Extract keywords/themes from the tweet for library search
     theme_response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=200,
         system=(
             "Extract 3-5 search keywords from this tweet that would help find "
@@ -493,7 +496,7 @@ def generate_quote_reply(
 
         # Extract relevant parts only (cheap call)
         extract = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-6",
             max_tokens=1500,
             system=(
                 "Extract ONLY the parts of this transcript that relate to the tweet below. "
@@ -589,12 +592,12 @@ def generate_story(
     from .style_manager import build_style_prompt
 
     client = _get_anthropic_client()
-    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
     # Step 1: broaden the topic into a handful of search terms the FTS index
     # can actually hit — entity names, related concepts, synonyms.
     keyword_response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=300,
         system=(
             "You are a research assistant. Given a topic, produce 4-7 search "
@@ -638,7 +641,7 @@ def generate_story(
             continue
 
         extract = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-6",
             max_tokens=1800,
             system=(
                 "Extract ONLY the parts of this transcript that relate to the "
@@ -835,7 +838,7 @@ def generate_auto(
     from .style_manager import build_style_prompt
 
     client = _get_anthropic_client()
-    model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
     # Always mine new transcripts first to ensure diversity across sources
     unmined = get_unmined_transcripts(limit=mine_new * 3)
