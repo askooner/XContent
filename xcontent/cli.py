@@ -1590,6 +1590,66 @@ def library_ideas(video_id, limit):
     console.print(table)
 
 
+@library.command("clean")
+@click.option("--dry-run", is_flag=True, help="Preview what would be removed without deleting")
+def library_clean(dry_run):
+    """Remove off-topic transcripts and ideas from the library.
+
+    \b
+    Keeps transcripts from core channels (a16z, Relentless, Founders Podcast, etc.)
+    Filters mixed channels (Lex Fridman, Diary of a CEO) by title — removes
+    anything not about founders, business, startups, or tech.
+    """
+    import json as _json
+    from pathlib import Path
+
+    from .knowledge_base import _get_db, list_transcripts
+
+    channels_path = Path(__file__).resolve().parent.parent / "channels.json"
+    mixed_channels: set[str] = set()
+    if channels_path.exists():
+        for ch in _json.loads(channels_path.read_text()):
+            if ch.get("focus") == "mixed":
+                mixed_channels.add(ch["name"])
+                mixed_channels.add(ch.get("handle", ""))
+
+    from .content_generator import _FOUNDER_KEYWORDS
+
+    all_transcripts = list_transcripts(limit=500)
+    to_remove = []
+    for t in all_transcripts:
+        channel = t.get("channel", "")
+        if channel not in mixed_channels:
+            continue
+        title_lower = t.get("video_title", "").lower()
+        if not any(kw in title_lower for kw in _FOUNDER_KEYWORDS):
+            to_remove.append(t)
+
+    if not to_remove:
+        console.print("[green]Library is clean — no off-topic transcripts found.[/green]")
+        return
+
+    console.print(f"\n[bold]{'Would remove' if dry_run else 'Removing'} {len(to_remove)} off-topic transcripts:[/bold]\n")
+    for t in to_remove:
+        console.print(f"  [red]✗[/red] {t['video_title'][:60]} [dim]({t['channel']})[/dim]")
+
+    if dry_run:
+        console.print(f"\n[dim]Run without --dry-run to delete these.[/dim]")
+        return
+
+    db = _get_db()
+    removed_ideas = 0
+    for t in to_remove:
+        vid = t["video_id"]
+        removed_ideas += db.execute("SELECT COUNT(*) FROM ideas WHERE video_id = ?", (vid,)).fetchone()[0]
+        db.execute("DELETE FROM ideas WHERE video_id = ?", (vid,))
+        db.execute("DELETE FROM transcripts WHERE video_id = ?", (vid,))
+    db.commit()
+    db.close()
+
+    console.print(f"\n[bold green]Removed {len(to_remove)} transcripts and {removed_ideas} ideas.[/bold green]")
+
+
 @library.command("posts")
 @click.option("--limit", "-n", default=30, help="Number of posts to show")
 @click.option("--style", "-s", "style_name", default="", help="Filter by style")
