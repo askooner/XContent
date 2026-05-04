@@ -707,14 +707,13 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
 
     try:
 
-        console.print(f"[green]Found {len(ideas)} ideas (ranked by score):[/green]\n")
+        console.print(f"[green]Found {len(ideas)} ideas (ranked by rubric score):[/green]\n")
         for i, idea in enumerate(ideas, 1):
-            score = idea.get('story_score', '?')
-            detail = idea.get('score_detail', {})
-            score_str = f"[bold]{score}/10[/bold]"
-            if detail:
-                score_str += f" [dim](spec:{detail.get('specificity','?')} scroll:{detail.get('scroll_stop','?')} uniq:{detail.get('uniqueness','?')})[/dim]"
-            console.print(f"  [cyan]{i}[/cyan]. {score_str} {idea.get('title', 'Untitled')}")
+            yes_ct = idea.get('yes_count', '?')
+            total_q = idea.get('total_questions', '?')
+            passed = idea.get('rubric_pass', False)
+            status = "[green]PASS[/green]" if passed else "[yellow]BORDERLINE[/yellow]"
+            console.print(f"  [cyan]{i}[/cyan]. {status} ({yes_ct}/{total_q} rubric checks) {idea.get('title', 'Untitled')}")
             if idea.get('angle'):
                 console.print(f"     [dim]{idea['angle'][:80]}[/dim]")
             if idea.get('score_reason'):

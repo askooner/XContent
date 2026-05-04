@@ -169,13 +169,108 @@ def _extract_key_material(client, transcript: str, topic: str, focus: str, video
     return response.content[0].text
 
 
+def _load_rubric(client, style_name: str = "insights") -> str:
+    """Analyze the user's real published posts to derive a scoring rubric.
+
+    Instead of making up criteria, we look at what the user's actual best posts
+    have in common and turn those patterns into checkable questions.
+    Returns the rubric as a string for injection into scoring prompts.
+    Caches to disk so we only regenerate when style examples change.
+    """
+    rubric_path = Path(__file__).resolve().parent.parent / "styles" / f"{style_name}.rubric.txt"
+
+    try:
+        from .style_manager import load_style
+        style = load_style(style_name)
+        examples = style.get("examples", [])
+    except Exception:
+        examples = []
+
+    if not examples:
+        return _default_rubric()
+
+    # Check cache — rebuild if example count changed
+    if rubric_path.exists():
+        cached = rubric_path.read_text()
+        header_line = cached.split("\n")[0] if cached else ""
+        if header_line.startswith(f"# RUBRIC ({len(examples)} examples)"):
+            return cached
+
+    # Analyze the user's real posts to derive the rubric
+    posts_text = ""
+    for i, ex in enumerate(examples[:10], 1):
+        posts_text += f"--- POST {i} ---\n{ex}\n\n"
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=3000,
+        system=(
+            "You are analyzing a set of published Twitter/X posts to reverse-engineer "
+            "what makes them work. Your job is to produce a CONCRETE SCORING RUBRIC "
+            "that can be used to evaluate whether a new idea is worth writing about.\n\n"
+            "Study these posts carefully and answer:\n"
+            "1. What do these posts have in common? (Be specific — not 'they're good')\n"
+            "2. What concrete, checkable elements appear in most of them?\n"
+            "3. What makes the IDEAS behind these posts work (not the writing)?\n\n"
+            "Then produce a rubric of 5-7 YES/NO questions where each question tests "
+            "a specific, verifiable quality. Each question must be answerable by looking "
+            "at the raw idea and its source material — no subjectivity.\n\n"
+            "Bad question: 'Is this surprising?' (subjective, everyone answers yes)\n"
+            "Good question: 'Does the idea contain a specific decision where the founder "
+            "chose the opposite of what experts/conventional wisdom recommended?'\n\n"
+            "Bad question: 'Is this engaging?' (meaningless)\n"
+            "Good question: 'Can you point to an exact quote from the source that would "
+            "work as a standalone tweet?'\n\n"
+            "Format: output ONLY the rubric as numbered questions, one per line.\n"
+            "Before each question, write the PATTERN you observed that led to it.\n"
+            "Format each entry as:\n"
+            "PATTERN: [what you observed]\n"
+            "QUESTION: [yes/no question to check for it]\n"
+            "WEIGHT: [how many of the example posts had this — e.g. 8/10]\n\n"
+            "Then at the end, write:\n"
+            "THRESHOLD: An idea needs YES on at least N of these questions to be worth posting.\n\n"
+            "Be ruthlessly specific. These questions will be used to filter ideas automatically."
+        ),
+        messages=[{"role": "user", "content": (
+            f"Here are {len(examples[:10])} real published posts from the Founder Mode account. "
+            f"Analyze what makes these ideas work and produce the scoring rubric.\n\n{posts_text}"
+        )}],
+    )
+
+    rubric = f"# RUBRIC ({len(examples)} examples)\n\n{response.content[0].text}"
+
+    try:
+        rubric_path.parent.mkdir(parents=True, exist_ok=True)
+        rubric_path.write_text(rubric)
+    except Exception:
+        pass
+
+    return rubric
+
+
+def _default_rubric() -> str:
+    """Fallback rubric when no published posts exist yet."""
+    return (
+        "# DEFAULT RUBRIC (no published posts to analyze)\n\n"
+        "Score each idea YES/NO on these questions:\n"
+        "1. Does the idea name a SPECIFIC person and a SPECIFIC decision/action they took?\n"
+        "2. Does the key_material contain at least 2 VERBATIM quotes from the transcript?\n"
+        "3. Does the idea contain a specific number, dollar amount, date, or measurable outcome?\n"
+        "4. Is there a clear TENSION — conventional wisdom vs what actually happened?\n"
+        "5. Could you NOT write this post about a different founder and have it still work? "
+        "(If yes, it's specific enough. If no, it's too generic.)\n"
+        "6. Would someone who already follows business accounts learn something NEW from this?\n\n"
+        "THRESHOLD: An idea needs YES on at least 4 of 6 to be worth posting."
+    )
+
+
 def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
                    style_name: str = "insights") -> list[dict]:
-    """Two-pass idea extraction: scan wide, score each, return the top ranked.
+    """Three-pass idea extraction: scan wide, score against rubric, return top ranked.
 
-    Pass 1 — Cast a wide net: find every possible post-worthy moment (up to 10).
-    Pass 2 — Score and rank: rate each idea 1-10 against the user's real posts,
-             return only the top N that score 7+.
+    Pass 1 — Derive rubric from user's real posts (cached).
+    Pass 2 — Cast wide net: find every possible moment (up to 10).
+    Pass 3 — Score each idea against the rubric, return top N that pass.
     """
     client = _get_anthropic_client()
 
@@ -186,29 +281,18 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
     if num_ideas <= 0:
         num_ideas = 3
 
-    # Load the user's real posts as calibration examples
-    calibration = ""
-    try:
-        from .style_manager import load_style
-        style = load_style(style_name)
-        examples = style.get("examples", [])
-        if examples:
-            sample = examples[:5]
-            calibration = "\n\nHere are real posts from this account. These represent the QUALITY BAR and TASTE.\nOnly extract ideas that could produce posts at THIS level:\n\n"
-            for i, ex in enumerate(sample, 1):
-                calibration += f"--- EXAMPLE {i} ---\n{ex}\n\n"
-    except Exception:
-        pass
+    # ── Pass 1: Get the scoring rubric (derived from user's real posts) ──
+    rubric = _load_rubric(client, style_name)
 
-    # ── Pass 1: Cast wide net — find ALL possible moments ──
+    # ── Pass 2: Cast wide net — find ALL possible moments ──
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=8000,
         system=(
-            "You are the editorial brain for Founder Mode, a Twitter account about founders and entrepreneurship.\n\n"
-            "PASS 1 — WIDE SCAN: Find EVERY possible post-worthy moment in this transcript.\n"
-            "Cast a wide net. We will score and filter in a second pass.\n"
-            "Find up to 10 distinct moments — more is better at this stage.\n\n"
+            "You are the editorial brain for Founder Mode, a Twitter account about founders "
+            "and entrepreneurship.\n\n"
+            "WIDE SCAN: Find EVERY possible post-worthy moment in this transcript.\n"
+            "Cast a wide net — up to 10 distinct moments. We score and filter separately.\n\n"
             "Output ONLY a valid JSON array. Each object has exactly 3 keys:\n"
             '- "title": specific post title (name the founder and the specific thing)\n'
             '- "angle": the hook in 1 sentence — why this would stop someone scrolling\n'
@@ -222,10 +306,7 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
             "- A direct quote so good it could stand on its own\n"
             "- A surprising origin story, pivot, or near-death experience\n"
             "- A contrarian take backed by real results\n\n"
-            "SKIP these:\n"
-            "- Generic motivation without a specific story behind it\n"
-            "- Political takes, health, geopolitics\n"
-            "- Vague observations without quotes or numbers to back them\n\n"
+            "SKIP: Generic motivation, politics, health, vague observations without evidence.\n\n"
             "Output ONLY the JSON array. No markdown, no text before or after."
         ),
         messages=[{"role": "user", "content": (
@@ -239,39 +320,32 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
     if not raw_ideas:
         return []
 
-    # ── Pass 2: Score and rank each idea against the user's taste ──
+    # ── Pass 3: Score each idea against the rubric ──
     ideas_json = json.dumps(raw_ideas, indent=2)
 
     score_response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=6000,
         system=(
-            "You are scoring post ideas for Founder Mode, a Twitter account about founders "
-            "and entrepreneurship.\n\n"
-            "For EACH idea below, score it 1-10 on these criteria:\n"
-            "- SPECIFICITY (1-10): Does it have a concrete story, real quotes, actual numbers? "
-            "Or is it vague and generic?\n"
-            "- SCROLL-STOP (1-10): Would this make someone stop scrolling? Is it surprising, "
-            "counterintuitive, or emotionally compelling?\n"
-            "- UNIQUENESS (1-10): Is this a fresh angle most people haven't seen? Or a "
-            "well-known fact everyone already posts about?\n\n"
-            "OVERALL = average of the three scores. Round to nearest integer.\n\n"
+            "You are a scoring engine. You evaluate post ideas against a RUBRIC derived "
+            "from the account's own published posts.\n\n"
+            "THE RUBRIC (derived from analyzing the account's best posts):\n"
+            f"{rubric}\n\n"
+            "For EACH idea, answer EVERY rubric question YES or NO based on what's "
+            "actually in the idea's title, angle, and key_material. Do NOT guess or "
+            "assume — if the evidence isn't in the key_material, the answer is NO.\n\n"
             "Output ONLY a valid JSON array with one object per idea:\n"
-            '- "index": the 0-based index of the idea from the input\n'
-            '- "specificity": 1-10\n'
-            '- "scroll_stop": 1-10\n'
-            '- "uniqueness": 1-10\n'
-            '- "overall": 1-10 (average)\n'
-            '- "reason": 1 sentence explaining the score\n\n'
-            "Be HARSH. Most ideas should score 4-6. Only truly great ideas get 8+.\n"
-            "A 7 is decent. A 9 is exceptional. 10 is once-in-a-hundred.\n\n"
+            '- "index": 0-based index of the idea\n'
+            '- "yes_count": how many rubric questions got YES\n'
+            '- "total_questions": total rubric questions\n'
+            '- "answers": object mapping question number to true/false\n'
+            '- "passed": true if yes_count meets the threshold from the rubric\n'
+            '- "reason": 1 sentence — which questions failed and why\n\n'
+            "Be STRICT. Only answer YES when the evidence is clearly present.\n"
             "Output ONLY the JSON array. No markdown."
         ),
         messages=[{"role": "user", "content": (
-            f"Account: Founder Mode\n"
-            f"Source: {video_title}\n"
-            f"{calibration}\n"
-            f"Score each of these {len(raw_ideas)} ideas:\n\n{ideas_json}"
+            f"Score each of these {len(raw_ideas)} ideas against the rubric:\n\n{ideas_json}"
         )}],
     )
 
@@ -279,32 +353,36 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
     if not scores:
         return raw_ideas[:num_ideas]
 
-    # Merge scores into ideas and sort by overall score descending
+    # Merge scores and sort by yes_count descending
     scored_ideas = []
     for s in scores:
         idx = s.get("index", -1)
         if 0 <= idx < len(raw_ideas):
             idea = raw_ideas[idx].copy()
-            idea["story_score"] = s.get("overall", 0)
+            yes_count = s.get("yes_count", 0)
+            total = s.get("total_questions", 1)
+            idea["story_score"] = round(10 * yes_count / max(total, 1))
+            idea["rubric_pass"] = s.get("passed", False)
+            idea["yes_count"] = yes_count
+            idea["total_questions"] = total
             idea["score_reason"] = s.get("reason", "")
-            idea["score_detail"] = {
-                "specificity": s.get("specificity", 0),
-                "scroll_stop": s.get("scroll_stop", 0),
-                "uniqueness": s.get("uniqueness", 0),
-            }
+            idea["rubric_answers"] = s.get("answers", {})
             scored_ideas.append(idea)
 
-    scored_ideas.sort(key=lambda x: x.get("story_score", 0), reverse=True)
+    scored_ideas.sort(key=lambda x: x.get("yes_count", 0), reverse=True)
 
-    # Return only ideas scoring 7+ (the bar), capped at num_ideas
-    top = [i for i in scored_ideas if i.get("story_score", 0) >= 7]
-    if not top:
-        # If nothing hits 7, return the single best if it's at least 5
-        if scored_ideas and scored_ideas[0].get("story_score", 0) >= 5:
-            return scored_ideas[:1]
+    # Return ideas that passed the rubric threshold, capped at num_ideas
+    passed = [i for i in scored_ideas if i.get("rubric_pass", False)]
+    if not passed:
+        # If nothing passes, return best one if it got at least half the questions
+        if scored_ideas:
+            best = scored_ideas[0]
+            total = best.get("total_questions", 6)
+            if best.get("yes_count", 0) >= total / 2:
+                return scored_ideas[:1]
         return []
 
-    return top[:num_ideas]
+    return passed[:num_ideas]
 
 
 def _parse_json_array(text: str) -> list[dict]:
@@ -861,8 +939,11 @@ def _score_story_value(client, video_title: str, transcript_excerpt: str,
                        recent_topics: list[str], style_name: str = "insights") -> dict | None:
     """Score whether a transcript has a moment worth posting about.
 
-    Returns dict with {title, angle, format, score} if score >= 7, else None.
+    Uses the rubric derived from the user's own posts to evaluate.
+    Returns dict with {title, angle, format, score, yes_count} if it passes, else None.
     """
+    rubric = _load_rubric(client, style_name)
+
     recent_context = ""
     if recent_topics:
         recent_context = (
@@ -870,37 +951,19 @@ def _score_story_value(client, video_title: str, transcript_excerpt: str,
             + "\n".join(f"- {t}" for t in recent_topics[:20])
         )
 
-    calibration = ""
-    try:
-        from .style_manager import load_style
-        style = load_style(style_name)
-        examples = style.get("examples", [])
-        if examples:
-            sample = examples[:5]
-            calibration = "\n\nHere are real posts from this account — this is the QUALITY BAR:\n\n"
-            for i, ex in enumerate(sample, 1):
-                calibration += f"--- EXAMPLE {i} ---\n{ex}\n\n"
-    except Exception:
-        pass
-
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1500,
+        max_tokens=2000,
         system=(
             "You are the editorial brain for Founder Mode, a Twitter account about founders, "
             "entrepreneurship, business building, and technology.\n\n"
-            "Your job: read a transcript and decide if there's a SINGLE MOMENT worth a post.\n\n"
-            "A great moment is:\n"
-            "- A specific founder DECISION that defied convention (with the exact story)\n"
-            "- A number or fact that completely reframes how you think about a business\n"
-            "- A direct quote so good it could stand on its own as a tweet\n"
-            "- The exact moment something almost failed and what they did differently\n"
-            "- A mental model from a builder that's immediately actionable\n\n"
-            "A bad moment (REJECT these):\n"
-            "- Generic motivation: 'work hard', 'believe in yourself', 'take risks'\n"
-            "- Vague observations: 'culture matters', 'innovation is key'\n"
-            "- Politics, health, geopolitics, anything not about building\n"
-            "- Something everyone already knows about this person\n"
+            "Your job: read a transcript and find the SINGLE BEST moment worth a post, "
+            "then evaluate it against the scoring rubric.\n\n"
+            "SCORING RUBRIC (derived from the account's own published posts):\n"
+            f"{rubric}\n\n"
+            "SKIP these entirely:\n"
+            "- Generic motivation without a specific story\n"
+            "- Politics, health, geopolitics\n"
             "- Topics already covered in recent posts\n\n"
             "Also decide the BEST FORMAT for this moment:\n"
             "- 'insights': a narrative post with hook, tension, turn, evidence, closing\n"
@@ -908,18 +971,21 @@ def _score_story_value(client, video_title: str, transcript_excerpt: str,
             "- 'essays': a longer reflective piece letting the founder's words breathe\n"
             "- 'transcripts': numbered key points from the founder's own words\n\n"
             "Output ONLY valid JSON with these keys:\n"
-            '- "score": 1-10 (7+ means worth posting)\n'
             '- "title": specific post title naming the founder and the specific thing\n'
             '- "angle": the hook — why this would stop someone scrolling\n'
-            '- "format": best content format from the list above\n'
-            '- "reason": 1 sentence on why this scored what it did\n\n'
-            "If NOTHING meets the bar, return: {\"score\": 0, \"title\": \"\", \"angle\": \"\", "
-            "\"format\": \"insights\", \"reason\": \"nothing worth posting\"}\n\n"
-            "Output ONLY the JSON. No markdown, no text before or after."
+            '- "format": best content format\n'
+            '- "rubric_answers": object mapping each rubric question number to true/false\n'
+            '- "yes_count": how many rubric questions got YES\n'
+            '- "total_questions": total rubric questions\n'
+            '- "passed": true if meets rubric threshold\n'
+            '- "reason": 1 sentence explaining the evaluation\n\n'
+            "If NOTHING in the transcript meets the rubric, return:\n"
+            '{\"title\": \"\", \"angle\": \"\", \"format\": \"insights\", \"passed\": false, '
+            '\"yes_count\": 0, \"total_questions\": 0, \"reason\": \"nothing worth posting\"}\n\n'
+            "Output ONLY the JSON. No markdown."
         ),
         messages=[{"role": "user", "content": (
             f"Source: {video_title}\n"
-            f"{calibration}"
             f"{recent_context}\n\n"
             f"--- TRANSCRIPT ---\n{transcript_excerpt}\n--- END TRANSCRIPT ---"
         )}],
@@ -934,7 +1000,10 @@ def _score_story_value(client, video_title: str, transcript_excerpt: str,
 
     try:
         result = json.loads(text)
-        if result.get("score", 0) >= 7:
+        if result.get("passed", False) and result.get("title"):
+            yes = result.get("yes_count", 0)
+            total = result.get("total_questions", 1)
+            result["score"] = round(10 * yes / max(total, 1))
             return result
     except json.JSONDecodeError:
         pass
