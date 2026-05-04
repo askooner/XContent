@@ -13,7 +13,8 @@ import unicodedata
 QUALITY_THRESHOLD = 70
 
 BANNED_PHRASES = [
-    "here's the thing:",
+    "here's the thing",
+    "here's what",
     "let that sink in",
     "translation:",
     "for context,",
@@ -32,6 +33,7 @@ BANNED_PHRASES = [
     "it's worth noting",
     "this matters because",
     "here's why this is important",
+    "here's why",
     "it cannot be overstated",
     "this is something to watch",
     "seismic shift",
@@ -47,6 +49,9 @@ BANNED_PHRASES = [
     "it seems like",
     "could potentially",
     "might suggest",
+    "the brilliance",
+    "the genius",
+    "the beauty of",
 ]
 
 BANNED_PATTERNS = [
@@ -56,12 +61,21 @@ BANNED_PATTERNS = [
     r"the real \w+ is ",
     r"\w+ was simple:",
     r"\w+ was blunt:",
+    # "No X. No Y. Just Z." and variants
+    r"no \w[^.]{0,30}\.\s*no \w[^.]{0,30}\.\s*(just|only)",
+    # "You can X. You can Y. You can't Z." and similar repeated subject+verb
+    r"(you|he|she|they|it|we) (can|could|don't|didn't|won't|wouldn't|can't|couldn't) [^.]{1,40}\.\s*\1 \2",
+    # "Not because X. Not because Y."
+    r"not because [^.]{1,50}\.\s*not because ",
+    # "Maybe X. Maybe Y."
+    r"maybe [^.]{1,50}\.\s*maybe ",
 ]
 
 PARALLEL_TRIGGER_WORDS = frozenset({
     "not", "no", "never", "don't", "doesn't", "didn't", "can't",
     "won't", "isn't", "wasn't", "couldn't", "wouldn't", "shouldn't",
-    "every", "each", "just", "it's",
+    "every", "each", "just", "it's", "you", "he", "she", "they",
+    "it", "we", "maybe", "perhaps", "this",
 })
 
 BAD_OPENERS = [
@@ -78,11 +92,11 @@ def score_post(content: str, content_type: str = "insights") -> dict:
 
     phrase_issues = _check_prohibited_phrases(content)
     issues.extend(phrase_issues)
-    deductions += len(phrase_issues) * 15
+    deductions += len(phrase_issues) * 25
 
     parallel_issues = _check_parallel_structures(content)
     issues.extend(parallel_issues)
-    deductions += len(parallel_issues) * 20
+    deductions += len(parallel_issues) * 25
 
     format_issues = _check_formatting(content)
     issues.extend(format_issues)
@@ -172,9 +186,9 @@ def _check_length(content: str, content_type: str) -> list[str]:
     issues = []
     n = len(content)
     limits = {
-        "insights": (200, 2500),
-        "essays": (200, 3000),
-        "transcripts": (300, 3000),
+        "insights": (200, 1800),
+        "essays": (200, 2200),
+        "transcripts": (300, 2500),
         "quote-tweets": (50, 500),
     }
     lo, hi = limits.get(content_type, (100, 3000))

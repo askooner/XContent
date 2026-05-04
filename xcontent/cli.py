@@ -723,17 +723,18 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
         results = []
         for i, idea in enumerate(ideas, 1):
             with console.status(f"Writing post {i}/{len(ideas)}: {idea.get('title', '')}..."):
-                from .content_generator import generate, _slugify
+                from .content_generator import _slugify, _build_system_prompt, _build_user_prompt, _get_anthropic_client, _generate_with_quality_gate
                 from .style_manager import build_style_prompt
 
                 style_prompt = build_style_prompt(style_name)
-
-                from .content_generator import _build_system_prompt, _build_user_prompt, _get_anthropic_client
                 client = _get_anthropic_client()
-                write_model = model or os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+                write_model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
                 system_prompt = _build_system_prompt(style_prompt, content_type, style_name)
                 key_material = idea.get("key_material", idea.get("key_quotes", ""))
+                if not isinstance(key_material, str):
+                    import json as _j
+                    key_material = _j.dumps(key_material) if key_material else ""
                 user_prompt = _build_user_prompt(
                     transcript=key_material,
                     topic=idea.get("title", ""),
@@ -742,13 +743,9 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
                     video_title=video_title,
                 )
 
-                response = client.messages.create(
-                    model=write_model,
-                    max_tokens=4096,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}],
+                content, quality = _generate_with_quality_gate(
+                    client, write_model, system_prompt, user_prompt, content_type
                 )
-                content = response.content[0].text
 
                 # Save
                 from pathlib import Path as P
@@ -772,14 +769,20 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
                     "video_id": video_id or "",
                     "batch_index": i,
                     "batch_total": len(ideas),
+                    "quality_score": quality["score"],
+                    "quality_passed": quality["passed"],
                     "generated_at": datetime.now().isoformat(),
                 }
                 meta_path = content_dir / f"{base}.meta.json"
                 meta_path.write_text(_json.dumps(meta, indent=2))
 
-                results.append((content, txt_path))
+                results.append((content, txt_path, quality))
 
-            console.print(f"  [green]Post {i}:[/green] {idea.get('title', '')}")
+            q_status = "[green]PASS[/green]" if quality["passed"] else f"[yellow]FLAGGED ({quality['score']})[/yellow]"
+            console.print(f"  {q_status} Post {i}: {idea.get('title', '')}")
+            if quality["issues"]:
+                for issue in quality["issues"][:3]:
+                    console.print(f"    [dim]- {issue}[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -787,26 +790,28 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
 
     # Show all generated posts
     console.print(f"\n[bold green]Generated {len(results)} posts:[/bold green]\n")
-    for i, (content, path) in enumerate(results, 1):
-        console.print(f"[bold cyan]── Post {i} ──[/bold cyan]\n")
+    for i, (content, path, quality) in enumerate(results, 1):
+        q_tag = "[green]PASS[/green]" if quality["passed"] else f"[yellow]{quality['score']}[/yellow]"
+        console.print(f"[bold cyan]── Post {i} ── {q_tag} ──[/bold cyan]\n")
         console.print(content)
         console.print(f"\n[dim]Saved: {path}[/dim]\n")
 
     # Copy all to clipboard (separated by dividers)
     try:
         import subprocess
-        all_content = "\n\n---\n\n".join(c for c, _ in results)
+        all_content = "\n\n---\n\n".join(c for c, _, _q in results)
         subprocess.run(["pbcopy"], input=all_content.encode(), check=True)
         console.print(f"[green]All {len(results)} posts copied to clipboard (separated by ---).[/green]")
     except Exception:
         pass
 
-    # Push all to Typefully
-    if not no_typefully:
+    # Push all to Typefully (only posts that passed quality)
+    passed_posts = [c for c, _, q in results if q["passed"]]
+    if not no_typefully and passed_posts:
         try:
             from .typefully import push_drafts
-            with console.status(f"Pushing {len(results)} drafts to Typefully..."):
-                drafts = push_drafts([c for c, _ in results])
+            with console.status(f"Pushing {len(passed_posts)} drafts to Typefully..."):
+                drafts = push_drafts(passed_posts)
             console.print(f"[green]Pushed {len(drafts)} drafts to Typefully.[/green]")
         except RuntimeError as e:
             if "TYPEFULLY_API_KEY not set" in str(e):
