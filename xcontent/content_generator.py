@@ -171,10 +171,11 @@ def _extract_key_material(client, transcript: str, topic: str, focus: str, video
 
 def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
                    style_name: str = "insights") -> list[dict]:
-    """Extract the 1-2 best post ideas from a transcript, calibrated to the user's taste.
+    """Two-pass idea extraction: scan wide, score each, return the top ranked.
 
-    Uses the user's published posts as the quality bar — only extracts ideas
-    that could produce posts at that level.
+    Pass 1 — Cast a wide net: find every possible post-worthy moment (up to 10).
+    Pass 2 — Score and rank: rate each idea 1-10 against the user's real posts,
+             return only the top N that score 7+.
     """
     client = _get_anthropic_client()
 
@@ -183,7 +184,7 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
         extract_transcript = extract_transcript[:80_000]
 
     if num_ideas <= 0:
-        num_ideas = 2
+        num_ideas = 3
 
     # Load the user's real posts as calibration examples
     calibration = ""
@@ -192,7 +193,6 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
         style = load_style(style_name)
         examples = style.get("examples", [])
         if examples:
-            # Pick up to 5 examples to show the model the user's taste
             sample = examples[:5]
             calibration = "\n\nHere are real posts from this account. These represent the QUALITY BAR and TASTE.\nOnly extract ideas that could produce posts at THIS level:\n\n"
             for i, ex in enumerate(sample, 1):
@@ -200,100 +200,140 @@ def extract_ideas(transcript: str, video_title: str = "", num_ideas: int = 0,
     except Exception:
         pass
 
+    # ── Pass 1: Cast wide net — find ALL possible moments ──
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=6000,
+        max_tokens=8000,
         system=(
             "You are the editorial brain for Founder Mode, a Twitter account about founders and entrepreneurship.\n\n"
-            "Your job: find the 1-2 moments in a transcript that would make someone stop scrolling.\n\n"
+            "PASS 1 — WIDE SCAN: Find EVERY possible post-worthy moment in this transcript.\n"
+            "Cast a wide net. We will score and filter in a second pass.\n"
+            "Find up to 10 distinct moments — more is better at this stage.\n\n"
             "Output ONLY a valid JSON array. Each object has exactly 3 keys:\n"
-            '- "title": specific post title (not generic — name the founder and the specific thing)\n'
-            '- "angle": the hook in 1 sentence — why this is surprising, counterintuitive, or compelling\n'
-            '- "key_material": VERBATIM quotes from the transcript (at least 2-3 direct quotes), '
-            "specific numbers, names, stories — the raw material to build the post from\n\n"
-            "YOUR TASTE (what you're looking for):\n"
+            '- "title": specific post title (name the founder and the specific thing)\n'
+            '- "angle": the hook in 1 sentence — why this would stop someone scrolling\n'
+            '- "key_material": VERBATIM quotes from the transcript (2-3+ direct quotes), '
+            "specific numbers, names, stories — the raw evidence\n\n"
+            "What counts as a moment:\n"
             "- A specific founder DECISION that went against conventional wisdom\n"
             "- The exact moment something almost failed and what they did differently\n"
-            "- A number or fact that completely reframes how you think about a business\n"
-            "- A mental model from a builder that's immediately useful\n"
-            "- A direct quote so good it could stand on its own\n\n"
-            "KILL LIST (never extract these):\n"
-            "- Generic motivation: 'work hard', 'be resilient', 'take risks', 'believe in yourself'\n"
-            "- Political takes, health, geopolitics, anything not about building\n"
-            "- Vague observations without a specific story: 'innovation matters', 'culture is key'\n"
-            "- Ideas where you can't point to a specific quote or number from the transcript\n\n"
-            "If this transcript has NO ideas that meet the bar, return []\n"
-            "Better to return 0 than to return something mediocre.\n\n"
-            "Output ONLY the JSON array. No text before or after it. No markdown."
+            "- A number or fact that reframes how you think about a business\n"
+            "- A mental model from a builder that's immediately actionable\n"
+            "- A direct quote so good it could stand on its own\n"
+            "- A surprising origin story, pivot, or near-death experience\n"
+            "- A contrarian take backed by real results\n\n"
+            "SKIP these:\n"
+            "- Generic motivation without a specific story behind it\n"
+            "- Political takes, health, geopolitics\n"
+            "- Vague observations without quotes or numbers to back them\n\n"
+            "Output ONLY the JSON array. No markdown, no text before or after."
         ),
         messages=[{"role": "user", "content": (
-            f"Source: {video_title}\n"
-            f"{calibration}\n"
-            f"Find the best 1-{num_ideas} ideas from this transcript.\n\n"
+            f"Source: {video_title}\n\n"
+            f"Find every possible post-worthy moment.\n\n"
             f"--- TRANSCRIPT ---\n{extract_transcript}\n--- END TRANSCRIPT ---"
         )}],
     )
 
-    text = response.content[0].text.strip()
+    raw_ideas = _parse_json_array(response.content[0].text)
+    if not raw_ideas:
+        return []
 
-    # Strip markdown code fences if present
+    # ── Pass 2: Score and rank each idea against the user's taste ──
+    ideas_json = json.dumps(raw_ideas, indent=2)
+
+    score_response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=6000,
+        system=(
+            "You are scoring post ideas for Founder Mode, a Twitter account about founders "
+            "and entrepreneurship.\n\n"
+            "For EACH idea below, score it 1-10 on these criteria:\n"
+            "- SPECIFICITY (1-10): Does it have a concrete story, real quotes, actual numbers? "
+            "Or is it vague and generic?\n"
+            "- SCROLL-STOP (1-10): Would this make someone stop scrolling? Is it surprising, "
+            "counterintuitive, or emotionally compelling?\n"
+            "- UNIQUENESS (1-10): Is this a fresh angle most people haven't seen? Or a "
+            "well-known fact everyone already posts about?\n\n"
+            "OVERALL = average of the three scores. Round to nearest integer.\n\n"
+            "Output ONLY a valid JSON array with one object per idea:\n"
+            '- "index": the 0-based index of the idea from the input\n'
+            '- "specificity": 1-10\n'
+            '- "scroll_stop": 1-10\n'
+            '- "uniqueness": 1-10\n'
+            '- "overall": 1-10 (average)\n'
+            '- "reason": 1 sentence explaining the score\n\n'
+            "Be HARSH. Most ideas should score 4-6. Only truly great ideas get 8+.\n"
+            "A 7 is decent. A 9 is exceptional. 10 is once-in-a-hundred.\n\n"
+            "Output ONLY the JSON array. No markdown."
+        ),
+        messages=[{"role": "user", "content": (
+            f"Account: Founder Mode\n"
+            f"Source: {video_title}\n"
+            f"{calibration}\n"
+            f"Score each of these {len(raw_ideas)} ideas:\n\n{ideas_json}"
+        )}],
+    )
+
+    scores = _parse_json_array(score_response.content[0].text)
+    if not scores:
+        return raw_ideas[:num_ideas]
+
+    # Merge scores into ideas and sort by overall score descending
+    scored_ideas = []
+    for s in scores:
+        idx = s.get("index", -1)
+        if 0 <= idx < len(raw_ideas):
+            idea = raw_ideas[idx].copy()
+            idea["story_score"] = s.get("overall", 0)
+            idea["score_reason"] = s.get("reason", "")
+            idea["score_detail"] = {
+                "specificity": s.get("specificity", 0),
+                "scroll_stop": s.get("scroll_stop", 0),
+                "uniqueness": s.get("uniqueness", 0),
+            }
+            scored_ideas.append(idea)
+
+    scored_ideas.sort(key=lambda x: x.get("story_score", 0), reverse=True)
+
+    # Return only ideas scoring 7+ (the bar), capped at num_ideas
+    top = [i for i in scored_ideas if i.get("story_score", 0) >= 7]
+    if not top:
+        # If nothing hits 7, return the single best if it's at least 5
+        if scored_ideas and scored_ideas[0].get("story_score", 0) >= 5:
+            return scored_ideas[:1]
+        return []
+
+    return top[:num_ideas]
+
+
+def _parse_json_array(text: str) -> list[dict]:
+    """Parse a JSON array from model output, handling markdown fences."""
+    text = text.strip()
     if text.startswith("```"):
-        # Remove first line (```json or ```) and last line (```)
         lines = text.split("\n")
         text = "\n".join(lines[1:])
         if text.rstrip().endswith("```"):
             text = text.rstrip()[:-3]
 
-    # Try parsing directly
     try:
-        ideas = json.loads(text)
-        if isinstance(ideas, list) and len(ideas) > 0:
-            return ideas
+        result = json.loads(text)
+        if isinstance(result, list):
+            return result
     except json.JSONDecodeError:
         pass
 
-    # Fallback: find the JSON array in the text
     import re
     match = re.search(r'\[[\s\S]*\]', text)
     if match:
         try:
-            ideas = json.loads(match.group())
-            if isinstance(ideas, list) and len(ideas) > 0:
-                return ideas
+            result = json.loads(match.group())
+            if isinstance(result, list):
+                return result
         except json.JSONDecodeError:
             pass
 
-    # Last resort: prefill assistant response to force JSON
-    response2 = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=6000,
-        messages=[
-            {"role": "user", "content": (
-                f"Source: {video_title}\n\n"
-                f"Extract exactly {num_ideas} distinct post ideas from this transcript. "
-                f"Each must have: title, angle, key_material (with direct quotes). "
-                f"Output ONLY a JSON array.\n\n"
-                f"--- TRANSCRIPT ---\n{extract_transcript[:40000]}\n--- END TRANSCRIPT ---"
-            )},
-            {"role": "assistant", "content": "[{"},
-        ],
-    )
-
-    text2 = "[{" + response2.content[0].text.strip()
-    if text2.rstrip().endswith("```"):
-        text2 = text2.rstrip()[:-3]
-
-    try:
-        ideas = json.loads(text2)
-        if isinstance(ideas, list) and len(ideas) > 0:
-            return ideas
-    except json.JSONDecodeError:
-        pass
-
-    raise ValueError(
-        f"Could not extract ideas after 2 attempts. "
-        f"Response started with: {text[:200]}"
-    )
+    return []
 
 
 def generate_batch(

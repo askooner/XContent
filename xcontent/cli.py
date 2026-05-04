@@ -707,11 +707,18 @@ def batch(style_name, video_id, topic, content_type, num_posts, transcript_file,
 
     try:
 
-        console.print(f"[green]Found {len(ideas)} ideas:[/green]\n")
+        console.print(f"[green]Found {len(ideas)} ideas (ranked by score):[/green]\n")
         for i, idea in enumerate(ideas, 1):
-            console.print(f"  [cyan]{i}[/cyan]. {idea.get('title', 'Untitled')}")
+            score = idea.get('story_score', '?')
+            detail = idea.get('score_detail', {})
+            score_str = f"[bold]{score}/10[/bold]"
+            if detail:
+                score_str += f" [dim](spec:{detail.get('specificity','?')} scroll:{detail.get('scroll_stop','?')} uniq:{detail.get('uniqueness','?')})[/dim]"
+            console.print(f"  [cyan]{i}[/cyan]. {score_str} {idea.get('title', 'Untitled')}")
             if idea.get('angle'):
                 console.print(f"     [dim]{idea['angle'][:80]}[/dim]")
+            if idea.get('score_reason'):
+                console.print(f"     [dim italic]{idea['score_reason']}[/dim italic]")
         console.print()
 
         results = []
