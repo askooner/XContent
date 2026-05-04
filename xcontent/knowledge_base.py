@@ -220,11 +220,13 @@ def save_ideas(video_id: str, ideas: list[dict]) -> None:
     db = _get_db()
     now = datetime.now().isoformat()
     for idea in ideas:
+        km = idea.get("key_material", "")
+        if not isinstance(km, str):
+            km = json.dumps(km) if km else ""
         db.execute(
             """INSERT INTO ideas (video_id, title, angle, key_material, status, created_at)
                VALUES (?, ?, ?, ?, 'unused', ?)""",
-            (video_id, idea.get("title", ""), idea.get("angle", ""),
-             idea.get("key_material", ""), now),
+            (video_id, idea.get("title", ""), idea.get("angle", ""), km, now),
         )
     db.commit()
     db.close()
