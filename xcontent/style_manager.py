@@ -96,47 +96,47 @@ def update_style(name: str, examples: list[str] | None = None, description: str 
 def build_style_prompt(name: str) -> str:
     """Build a prompt section that teaches the AI your writing style.
 
-    This is injected into the content generation prompt so Claude
-    understands exactly how you write without you explaining it again.
+    Uses the user's best posts as the PRIMARY instruction — the model should
+    match these exactly in voice, structure, and rhythm. Not as inspiration,
+    as the template.
     """
     profile = load_style(name)
     examples = profile["examples"]
 
+    # Pick 8 diverse examples — enough to show the range, not so many it dilutes
+    import random
+    if len(examples) > 8:
+        sample = random.sample(examples, 8)
+    else:
+        sample = examples
+
     lines = [
-        "# YOUR WRITING STYLE",
+        "# HOW YOU WRITE",
         "",
-        f"Style profile: {profile['name']}",
+        "These are YOUR published posts. This is YOUR voice.",
+        "Study them obsessively. Match their exact rhythm, length, structure, and tone.",
+        "Your output should be INDISTINGUISHABLE from these examples.",
+        "",
+        "If your draft doesn't read like it belongs in this list, throw it out and start over.",
+        "",
     ]
-    if profile.get("description"):
-        lines.append(f"Description: {profile['description']}")
 
-    lines.append("")
-    lines.append(f"Below are {len(examples)} example posts that illustrate the PATTERNS of this style.")
-    lines.append("These are a starting point, NOT templates to copy or imitate literally.")
-    lines.append("Learn the underlying patterns — then be CREATIVE and original with every post.")
-    lines.append("")
-
-    for i, example in enumerate(examples, 1):
-        lines.append(f"--- EXAMPLE {i} ---")
+    for i, example in enumerate(sample, 1):
+        lines.append(f"--- YOUR POST {i} ---")
         lines.append(example.strip())
         lines.append("")
 
-    lines.append("--- END EXAMPLES ---")
+    lines.append("--- END YOUR POSTS ---")
     lines.append("")
-    lines.append("IMPORTANT — What to learn from these examples (the patterns):")
-    lines.append("- The RHYTHM: short paragraphs, line breaks, punchy sentences")
-    lines.append("- The STRUCTURE: how they open, build, and close")
-    lines.append("- The MIX: direct quotes woven with narrative/commentary")
-    lines.append("- The TONE: confident, direct, no fluff, no hedging")
+    lines.append("MATCH THESE EXACTLY:")
+    lines.append("- Same sentence lengths. Same paragraph lengths. Same number of line breaks.")
+    lines.append("- Same ratio of quotes to narrative. Same density of specific facts.")
+    lines.append("- Same kinds of openings. Same kinds of endings.")
+    lines.append("- If your posts are typically 8-15 lines, write 8-15 lines. Not 30.")
+    lines.append("- If your posts use 1-2 quotes, use 1-2 quotes. Not 5.")
     lines.append("")
-    lines.append("What NOT to do:")
-    lines.append("- Do NOT copy the exact opening formulas from the examples")
-    lines.append("- Do NOT repeat the same sentence structures over and over")
-    lines.append("- Do NOT use clichés or generic motivational language")
-    lines.append("- Do NOT start every post the same way — VARY your hooks")
-    lines.append("- Do NOT write like a summary or book report")
-    lines.append("")
-    lines.append("Be CREATIVE. Every post should feel fresh and unique.")
-    lines.append("The examples show the voice — YOUR job is to find new ways to use it.")
+    lines.append("THE ONE RULE: Your output must pass as one of the posts above.")
+    lines.append("A reader scrolling through your timeline should not be able to tell")
+    lines.append("which posts are real and which you generated.")
 
     return "\n".join(lines)

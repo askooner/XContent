@@ -105,24 +105,26 @@ def _get_library_context(client, topic: str, angle: str = "",
 
 def _generate_with_quality_gate(
     client, model: str, system_prompt: str, user_prompt: str,
-    content_type: str = "insights", max_attempts: int = 2,
+    content_type: str = "insights", max_attempts: int = 3,
 ) -> tuple[str, dict]:
     """Generate a post and run it through the quality gate.
 
-    If the first attempt fails quality, regenerates with fix instructions.
-    Returns (content, quality_result).
+    Up to 3 attempts. On failure, feeds back the exact offending lines
+    so the model rewrites specifically rather than regenerating blindly.
     """
     from .quality_scorer import score_post
+    import re
 
     content = ""
     result = {"score": 0, "passed": False, "issues": []}
+    messages = [{"role": "user", "content": user_prompt}]
 
     for attempt in range(max_attempts):
         response = client.messages.create(
             model=model,
             max_tokens=4096,
             system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=messages,
         )
         content = response.content[0].text
         result = score_post(content, content_type)
@@ -131,11 +133,39 @@ def _generate_with_quality_gate(
             return content, result
 
         if attempt < max_attempts - 1:
-            fix_lines = "\n".join(f"- FIX: {issue}" for issue in result["issues"])
-            user_prompt += (
-                f"\n\nIMPORTANT — Your previous output failed quality checks. "
-                f"Rewrite and fix these specific issues:\n{fix_lines}"
-            )
+            # Find the exact offending lines in the generated post
+            bad_lines = []
+            lines = content.split("\n")
+            for i, line in enumerate(lines):
+                lower = line.lower().strip()
+                if not lower:
+                    continue
+                # Check for parallel openings with the next non-empty line
+                for j in range(i + 1, len(lines)):
+                    next_lower = lines[j].lower().strip()
+                    if next_lower:
+                        words_a = lower.split()[:2]
+                        words_b = next_lower.split()[:2]
+                        if words_a and words_b and words_a[0] == words_b[0]:
+                            bad_lines.append(f'"{line.strip()}" + "{lines[j].strip()}"')
+                        break
+
+            fix_msg = "Your post FAILED quality checks. Rewrite the ENTIRE post from scratch.\n\n"
+            fix_msg += "SPECIFIC VIOLATIONS:\n"
+            for issue in result["issues"]:
+                fix_msg += f"- {issue}\n"
+            if bad_lines:
+                fix_msg += "\nTHESE EXACT LINES ARE THE PROBLEM:\n"
+                for bl in bad_lines[:5]:
+                    fix_msg += f"- {bl}\n"
+                fix_msg += "\nRewrite each of these so NO two consecutive sentences start the same way.\n"
+            fix_msg += "\nDo NOT just tweak words. Write a completely different draft with varied sentence structures."
+
+            messages = [
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": content},
+                {"role": "user", "content": fix_msg},
+            ]
 
     return content, result
 
@@ -1297,52 +1327,23 @@ def _build_feedback_section(style_name: str, content_type: str) -> str:
 
 
 def _build_system_prompt(style_prompt: str, content_type: str, style_name: str = "") -> str:
-    """Build the full system prompt combining style + content type instructions + feedback."""
+    """Build the full system prompt: examples-first, minimal prohibitions."""
     content_type_instructions = {
         "insights": (
-            "You are writing an INSIGHTS post for Twitter/X.\n"
-            "STRUCTURE: Build tension around ONE specific story or decision.\n"
-            "  1. Hook — a bold claim, a counterintuitive fact, or a scene. 1-2 lines max.\n"
-            "  2. Setup — the context, the conventional approach.\n"
-            "  3. Turn — what they actually did, and why it's the opposite of expected.\n"
-            "  4. The math / the evidence — concrete numbers, quotes, comparisons.\n"
-            "  5. Closing line — the universal principle, distilled to one sentence.\n"
-            "VOICE:\n"
-            "- Short paragraphs, often single sentences. Lots of line breaks.\n"
-            "- Embed real quotes mid-post as proof, not decoration.\n"
-            "- Write like you know this cold — confident, no hedging.\n"
-            "- No filler transitions. Every line moves the argument forward.\n"
-            "OPENINGS — NEVER start with '[Person] on [topic]:'\n"
-            "  Instead: a bold claim ('Nvidia could easily become a hyperscaler.'),\n"
-            "  a surprising fact, a specific scene, or drop straight into the tension.\n"
-            "ENDING: A single distilled line — the principle that makes someone screenshot it."
+            "Format: INSIGHTS post for Twitter/X.\n"
+            "One story. One decision. One insight. Build tension, pay it off."
         ),
         "essays": (
-            "You are writing an ESSAY post for Twitter/X.\n"
-            "- Open with a title/attribution OR a thought-provoking framing\n"
-            "- Present the person's words and ideas in flowing paragraphs\n"
-            "- Let the source material breathe — minimal editorial voice\n"
-            "- The tone is reverent and thoughtful\n"
-            "- Use paragraph breaks between distinct ideas\n"
-            "- VARY your openings — don't always use the same title format"
+            "Format: ESSAY post for Twitter/X.\n"
+            "Let the founder's words breathe. Minimal editorial voice. Reverent tone."
         ),
         "transcripts": (
-            "You are writing a TRANSCRIPT-STYLE post for Twitter/X.\n"
-            "- Hook line at the top that creates curiosity\n"
-            "- Optional dramatic context line\n"
-            "- Then 'In his/her own words:' or similar\n"
-            "- Numbered sections with ALL CAPS topic headers\n"
-            "- Under each header, the person's direct quote\n"
-            "- Pick the 5-8 most powerful points from the source\n"
-            "- VARY your hook — don't always use the same formula"
+            "Format: TRANSCRIPT-STYLE post for Twitter/X.\n"
+            "Hook line, then numbered sections with the founder's direct quotes."
         ),
         "quote-tweets": (
-            "You are writing a QUOTE TWEET.\n"
-            "- Find the single most powerful quote from the source\n"
-            "- Put it in quotation marks\n"
-            "- Line break, then '~ [Person's Full Name]'\n"
-            "- No commentary. The quote does all the work.\n"
-            "- Max 2-3 sentences — shorter is better"
+            "Format: QUOTE TWEET.\n"
+            "One devastating quote in quotation marks. Attribution. Nothing else."
         ),
     }
 
@@ -1350,102 +1351,38 @@ def _build_system_prompt(style_prompt: str, content_type: str, style_name: str =
 
     prompt = f"""{style_prompt}
 
-# CONTENT TYPE
-{instructions}
+# {instructions}
 
-# YOUR ROLE
-You are a ghostwriter creating original Twitter/X content from source material.
-You are NOT summarizing — you are finding the gold in a transcript and crafting
-something that would stop someone mid-scroll.
+# WRITING RULES
 
-QUOTES: Use real, verbatim quotes from the source material. They are the backbone
-of every post. Quotes are proof, not decoration.
+Your published posts above are the ONLY authority on how to write.
+Everything below is secondary to matching those posts.
 
-CROSS-FOUNDER CONNECTIONS: When the source material reminds you of another founder's
-story, decision, or quote, weave it in. Show the pattern across different people.
-Only connect to founders whose stories you can state accurately.
+Use real verbatim quotes from the source material. Every fact must be traceable.
+Never fabricate quotes, numbers, or dates. Never mention the podcast/video/source.
+Write as if YOU know this — not reporting on someone else.
 
-CREATIVITY IS MANDATORY:
-- Every post must feel FRESH and UNIQUE — never formulaic
-- VARY your hooks — sometimes start with a bold claim, sometimes a quote,
-  sometimes a story, sometimes a question, sometimes a surprising fact
-- VARY your structure — don't follow the same pattern every time
-- The examples in the style guide show the VOICE, not a rigid template
-- Surprise the reader. Find unexpected angles. Be bold.
+SENTENCE STRUCTURE — read this carefully:
+Every sentence in your post must have a DIFFERENT grammatical shape than the
+sentence before it. If two consecutive sentences start with the same word or
+follow the same pattern, one of them is wrong.
 
-Rules:
-- NEVER mention "this podcast" or "this video" or "according to"
-- NEVER use generic motivational language or cliché phrases
-- NEVER start with "I just listened to..." or "In a recent episode..."
-- NEVER start a sentence with "So," or "Now,"
-- NEVER use filler transitions: "Meanwhile", "Additionally", "Furthermore", "Moreover"
-- NEVER explain what the reader should feel: "This should worry investors"
-- NEVER use first-person singular ("I think", "I believe")
-- NEVER use emojis or hashtags
-- NEVER fabricate numbers, dates, or quotes
-- Extract specific stories, numbers, quotes, and details — specificity is what
-  makes content interesting
-- If a focus area is provided, go deep on that. If not, pull the most compelling
-  insights from the material
-- Write as if YOU are the author sharing things YOU know, not reporting on someone else
+These are ALL banned:
+  "No X. No Y. Just Z."
+  "You can X. You can Y. You can't Z."
+  "Not because X. Not because Y."
+  "It kills X. It kills Y. It kills Z."
+  "Before X. Before Y. Before Z."
+  "Maybe X. Maybe Y."
+  "He didn't X. He didn't Y."
+Any pattern where 2+ consecutive sentences share an opening = failure.
 
-PROHIBITED PHRASES — never use any of these:
-Sentence patterns:
-- "It's not [X]. It's [Y]." or "This is not [X]. This is [Y]." (any variant)
-- "This is what happens when [X] meets [Y]."
-- "The real [X] is [Y]"
-- "[X] was simple:" or "[X] was blunt:"
-- Dramatic repetition: "The 2-year. The 2-year."
+ALSO BANNED: "Here's the thing", "Here's what", "The brilliance",
+"The genius", "Let that sink in", "Game-changer", emojis, hashtags.
 
-Phrases:
-- "Here's the thing:"
-- "Let that sink in."
-- "Translation: ..."
-- "For context, ..."
-- "Hits home" or "Hits different"
-- "Most do [X]..."
-
-Hedging: "I think", "in my opinion", "it seems like", "could potentially",
-"might suggest", "perhaps"
-
-AI slop: "this is huge", "buckle up", "let that sink in", "the implications
-are staggering", "game-changer", "paradigm shift", "sends shockwaves",
-"raises big questions", "all eyes on", "only time will tell", "remains to
-be seen"
-
-Soft editorial: "it's worth noting", "this matters because", "here's why
-this is important", "it cannot be overstated", "this is something to watch"
-
-Literary/flowery: "seismic shift", "perfect storm", "watershed moment",
-"there's nowhere to hide"
-
-Buzzwords: "game-changer", "revolutionary", "disrupting", "reframe",
-"framing"
-
-Engagement bait: "What do you think?", "Thoughts?", "Agree or disagree?",
-"Follow for more"
-
-Structural:
-- Emojis, hashtags
-- Listicle framing inside prose (numbered lists embedded in narrative)
-- Do NOT overuse em-dashes as a stylistic crutch
-
-PARALLEL STRUCTURE BAN — THIS IS CRITICAL:
-Do NOT repeat the same grammatical opening 2+ times in a row. Period.
-This is the single most common failure mode. Examples of what NEVER to write:
-  BAD: "Not clean. Not restaurant clean. Baby-lickable clean."
-  BAD: "No five-year lock. No database reminders. Just raw exposure."
-  BAD: "You can't cut corners. You can't hire badly. You can't pretend."
-  BAD: "Not because they invented X. Not because they have Y."
-  BAD: "He didn't do X. He didn't do Y. He did Z."
-  BAD: "It forces you to build. Train. Think. Hire."
-Every one of these is a crutch. If you catch yourself starting consecutive
-sentences with the same word or phrase, STOP and rewrite. Vary the sentence
-structure. Make each sentence arrive differently than the one before it.
-The reader should never be able to predict the next sentence's shape.
+If you're unsure whether a sentence structure is repetitive, it is. Rewrite it.
 """
 
-    # Inject feedback loop if available
     feedback_section = _build_feedback_section(style_name, content_type)
     if feedback_section:
         prompt += feedback_section
